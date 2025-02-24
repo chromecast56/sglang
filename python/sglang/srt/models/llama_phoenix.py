@@ -31,23 +31,25 @@ from sglang.srt.layers.vocab_parallel_embedding import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.models.llama import LlamaDecoderLayer, LlamaForCausalLM
+from sglang.srt.layers.layernorm import RMSNorm
 
 
-class LlamaDecoderLayer(LlamaDecoderLayer):
-    def __init__(
-        self,
-        config: LlamaConfig,
-        layer_id: int = 0,
-        quant_config: Optional[QuantizationConfig] = None,
-        prefix: str = "",
-    ) -> None:
-        super().__init__(config, layer_id, quant_config, prefix)
+# NOTE: I think Phoenix includes input layernorm
+# class LlamaDecoderLayer(LlamaDecoderLayer):
+#     def __init__(
+#         self,
+#         config: LlamaConfig,
+#         layer_id: int = 0,
+#         quant_config: Optional[QuantizationConfig] = None,
+#         prefix: str = "",
+#     ) -> None:
+#         super().__init__(config, layer_id, quant_config, prefix)
 
-        # Skip the input_layernorm
-        # https://github.com/SafeAILab/EAGLE/blob/35c78f6cdc19a73e05cf5c330b4c358dad970c6a/eagle/model/cnets.py#L427
-        if layer_id == 0:
-            del self.input_layernorm
-            setattr(self, "input_layernorm", lambda x: x)
+#         # Skip the input_layernorm
+#         # https://github.com/SafeAILab/EAGLE/blob/35c78f6cdc19a73e05cf5c330b4c358dad970c6a/eagle/model/cnets.py#L427
+#         if layer_id == 0:
+#             del self.input_layernorm
+#             setattr(self, "input_layernorm", lambda x: x)
 
 
 class LlamaModel(nn.Module):
@@ -71,6 +73,7 @@ class LlamaModel(nn.Module):
                 for i in range(config.num_hidden_layers)
             ]
         )
+        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.fc = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
 
     def forward(
@@ -98,10 +101,13 @@ class LlamaModel(nn.Module):
                 forward_batch,
                 residual,
             )
-        return hidden_states + residual
 
 
-class LlamaForCausalLMEagle(LlamaForCausalLM):
+        hidden_states, _ = self.norm(hidden_states, residual)
+        return hidden_states
+
+
+class LlamaForCausalLMPhoenix(LlamaForCausalLM):
     def __init__(
         self,
         config: LlamaConfig,
@@ -122,12 +128,11 @@ class LlamaForCausalLMEagle(LlamaForCausalLM):
             )
         self.logits_processor = LogitsProcessor(config)
 
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
-        for name, loaded_weight in weights:
-            if "lm_head" not in name:
-                name = "model." + name
-                super().load_weights([(name, loaded_weight)])
+    # def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+    #     for name, loaded_weight in weights:
+    #         if "lm_head" not in name:
+    #             name = "model." + name
+    #             super().load_weights([(name, loaded_weight)])
 
 
-EntryClass = [LlamaForCausalLMEagle]
-
+EntryClass = [LlamaForCausalLMPhoenix]

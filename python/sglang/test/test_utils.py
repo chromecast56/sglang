@@ -45,6 +45,8 @@ DEFAULT_SMALL_MODEL_NAME_FOR_TEST_QWEN = "Qwen/Qwen2.5-1.5B-Instruct"
 DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST = "meta-llama/Llama-2-7b-chat-hf"
 DEFAULT_EAGLE_DRAFT_MODEL_FOR_TEST = "lmzheng/sglang-EAGLE-llama2-chat-7B"
 
+DEFAULT_PHOENIX_DRAFT_MODEL_FOR_TEST = "/data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model"
+DEFAULT_PHOENIX_TARGET_MODEL_FOR_TEST = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
 def is_in_ci():
     """Return whether it is in CI runner."""

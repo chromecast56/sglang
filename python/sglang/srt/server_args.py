@@ -126,6 +126,7 @@ class ServerArgs:
     speculative_num_steps: int = 5
     speculative_num_draft_tokens: int = 64
     speculative_eagle_topk: int = 8
+    speculative_phoenix_is_lora: bool = False
 
     # Double Sparsity
     enable_double_sparsity: bool = False
@@ -265,6 +266,7 @@ class ServerArgs:
         if (
             self.speculative_algorithm == "EAGLE"
             or self.speculative_algorithm == "NEXTN"
+            or self.speculative_algorithm == "PHOENIX"
         ):
             self.prefill_only_one_req = True
             self.disable_cuda_graph_padding = True
@@ -708,7 +710,7 @@ class ServerArgs:
         parser.add_argument(
             "--speculative-algorithm",
             type=str,
-            choices=["EAGLE", "NEXTN"],
+            choices=["EAGLE", "NEXTN", "PHOENIX"],
             help="Speculative algorithm.",
         )
         parser.add_argument(
@@ -732,8 +734,13 @@ class ServerArgs:
             "--speculative-eagle-topk",
             type=int,
             help="The number of token sampled from draft model in eagle2 each step.",
-            choices=[1, 2, 4, 8],
+            # choices=[1, 2, 4, 8],
             default=ServerArgs.speculative_eagle_topk,
+        )
+        parser.add_argument(
+            "--speculative-phoenix-is-lora",
+            action="store_true",
+            help="Use LoRA for Phoenix model",
         )
 
         # Double Sparsity

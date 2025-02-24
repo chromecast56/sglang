@@ -14,12 +14,12 @@ from sglang.srt.model_executor.forward_batch_info import (
 )
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.speculative.eagle_draft_cuda_graph_runner import (
-    EAGLEDraftCudaGraphRunner,
+from sglang.srt.speculative.phoenix_draft_cuda_graph_runner import (
+    PhoenixDraftCudaGraphRunner,
 )
-from sglang.srt.speculative.eagle_utils import (
-    EagleDraftInput,
-    EagleVerifyInput,
+from sglang.srt.speculative.phoenix_utils import (
+    PhoenixDraftInput,
+    PhoenixVerifyInput,
     assign_draft_cache_locs,
     fast_topk,
     select_top_k_tokens,
@@ -29,7 +29,7 @@ from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 logger = logging.getLogger(__name__)
 
 
-class EAGLEWorker(TpModelWorker):
+class PhoenixWorker(TpModelWorker):
 
     def __init__(
         self,
@@ -72,6 +72,8 @@ class EAGLEWorker(TpModelWorker):
         if self.speculative_algorithm.is_phoenix():
             head = self.target_worker.model_runner.model.get_head()
             self.model_runner.model.set_head(head)
+            # embed, head = self.target_worker.model_runner.model.get_embed_and_head()
+            # self.model_runner.model.set_embed_and_head(embed, head)
 
         self.model_runner.server_args.disable_cuda_graph = backup_disable_cuda_graph
 
@@ -98,7 +100,7 @@ class EAGLEWorker(TpModelWorker):
             )
         else:
             raise ValueError(
-                f"EAGLE is not supportted in attention backend {server_args.attention_backend}"
+                f"Phoenix is not supportted in attention backend {server_args.attention_backend}"
             )
 
         self.model_runner.draft_attn_backend = self.draft_attn_backend
@@ -113,27 +115,35 @@ class EAGLEWorker(TpModelWorker):
 
         tic = time.time()
         logger.info("Capture cuda graph begin. This can take up to several minutes.")
-        self.cuda_graph_runner = EAGLEDraftCudaGraphRunner(self)
+        self.cuda_graph_runner = PhoenixDraftCudaGraphRunner(self)
         logger.info(f"Capture cuda graph end. Time elapsed: {time.time() - tic:.2f} s")
 
     def forward_batch_speculative_generation(self, batch: ScheduleBatch):
-        if batch.forward_mode.is_decode():
-            # Draft
-            spec_info: EagleVerifyInput = self.draft(batch)
 
+        if batch.forward_mode.is_decode():
+            # print("Starting decode")
+            # print("Step 1: Draft")
+            # Draft
+            spec_info: PhoenixVerifyInput = self.draft(batch)
+
+
+            # print("Step 2: Verify")
             # Verify
             (
-                next_draft_input,
-                logits_output,
-                verified_id,
+                next_draft_input,                  # contains aux hidden state
+                logits_output,                     # logits of original tokens
+                verified_id,                       # last accepted token
                 self.finish_extend_len,
                 accept_length_cpu,
                 model_worker_batch,
             ) = self.verify(batch, spec_info)
+            # TLDR: 
             batch.spec_info = next_draft_input
+
+            # print("logits_output.hidden_states: ", logits_output.hidden_states.shape) # [bsz*num_tokens, hidden_size]
             # if it is None, means all requsets are finished
             if batch.spec_info.verified_id is not None:
-                self.forward_draft_extend_after_decode(batch)
+                self.forward_draft_extend_after_decode(batch, logits_output)
             return (
                 logits_output,
                 verified_id,
@@ -142,6 +152,7 @@ class EAGLEWorker(TpModelWorker):
             )
 
         else:
+            # print("Starting Prefill")
             # Forward with the target model and get hidden states.
             # We need the full hidden states to prefill the KV cache of the draft model.
             model_worker_batch = batch.get_model_worker_batch()
@@ -149,14 +160,52 @@ class EAGLEWorker(TpModelWorker):
             logits_output, next_token_ids = self.target_worker.forward_batch_generation(
                 model_worker_batch
             )
+            # logits_output, _ = self.target_worker.forward_batch_generation(
+            #     model_worker_batch, skip_sample=True
+            # )
+            
 
+            # TODO: the "one extra pass" logic. Currently, first acc length will always be bad.
+
+            # TODO: Here, we will rerun the forward of the target for the very last token, with the lora branch (bsz 2).
+
+            # print("logits_output.hidden_states: ", logits_output.hidden_states.shape) # [seq_len, hidden_size]
             # Forward with the draft model.
-            batch.spec_info = EagleDraftInput(
+            batch.spec_info = PhoenixDraftInput(
                 hidden_states=logits_output.hidden_states,
                 verified_id=next_token_ids,
             )
             self.forward_draft_extend(batch)
             return logits_output, next_token_ids, model_worker_batch, 0
+
+
+    def verify(self, batch: ScheduleBatch, spec_info: PhoenixVerifyInput):
+        spec_info.prepare_for_verify(batch)
+        # print("Forward mode: TARGET_VERIFY")
+        batch.forward_mode = ForwardMode.TARGET_VERIFY
+        batch.spec_info = spec_info
+        model_worker_batch = batch.get_model_worker_batch()
+        logits_output, _ = self.target_worker.forward_batch_generation(
+            model_worker_batch, skip_sample=True
+        )
+        spec_info.hidden_states = logits_output.hidden_states
+
+
+        if batch.spec_info.is_lora:
+            num_tokens = spec_info.draft_token_num
+            # print(f"Draft token before: {batch.spec_info.draft_token}")
+            batch.spec_info.draft_token = batch.spec_info.draft_token[:num_tokens//2]
+            batch.spec_info.draft_token_num = num_tokens//2
+            batch.spec_info.hidden_states = batch.spec_info.hidden_states[num_tokens//2:]
+            # print(f"Draft token after: {batch.spec_info.draft_token}")
+
+            # print(f"logits before: {logits_output.next_token_logits[:, 0]}")
+            logits_output.next_token_logits = logits_output.next_token_logits[:num_tokens//2]
+            
+            # print(f"logits after: {logits_output.next_token_logits[:, 0]}")
+        res = spec_info.verify(batch, logits_output)
+        batch.forward_mode = ForwardMode.DECODE
+        return res + (model_worker_batch,)
 
     def draft(self, batch: ScheduleBatch):
         self._set_mem_pool(batch, self.model_runner)
@@ -165,10 +214,14 @@ class EAGLEWorker(TpModelWorker):
         num_seqs = batch.batch_size()
         spec_info = batch.spec_info
 
+
+        # print(f"Allocate cache locations: {num_seqs * self.topk * self.speculative_num_steps}")
         # Allocate cache locations
         out_cache_loc = batch.alloc_token_slots(
             num_seqs * self.topk * self.speculative_num_steps
         )
+
+        # Assigning draft cache locations. req_pool_indicies (input): torch.Size([1]). req_to_token_pool.req_to_token (output): torch.Size([4097, 131076])
         assign_draft_cache_locs[(num_seqs,)](
             batch.req_pool_indices,
             batch.req_to_token_pool.req_to_token,
@@ -180,9 +233,10 @@ class EAGLEWorker(TpModelWorker):
         )
 
         batch.out_cache_loc = out_cache_loc
+        # print(f"batch.out_cache_loc: {batch.out_cache_loc.shape}")            # [seq_len * topk * spec_steps]
         batch.seq_lens_sum = torch.sum(batch.seq_lens).item()
         spec_info.positions = batch.seq_lens.repeat_interleave(self.topk, dim=0)
-
+        # print(f"spec_info.positions: {spec_info.positions.shape}") # [topk]
         # Get forward batch
         spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
         model_worker_batch = batch.get_model_worker_batch()
@@ -200,9 +254,13 @@ class EAGLEWorker(TpModelWorker):
             self.draft_attn_backend.init_forward_metadata(forward_batch)
 
             # Run forward steps
+            # print("Starting draft_forward")
             score_list, token_list, parents_list = self.draft_forward(forward_batch)
 
-        ret = EagleVerifyInput.create(
+
+        # builds the tree on create invocation.
+        # print("Creating Verify Input")
+        ret = PhoenixVerifyInput.create(
             spec_info.verified_id,
             score_list,
             token_list,
@@ -213,6 +271,7 @@ class EAGLEWorker(TpModelWorker):
             self.speculative_num_steps,
             self.server_args.speculative_num_draft_tokens,
             batch.sampling_info.is_all_greedy,
+            self.server_args.speculative_phoenix_is_lora
         )
 
         # Free cache locations
@@ -220,26 +279,31 @@ class EAGLEWorker(TpModelWorker):
         self._set_mem_pool(batch, self.target_worker.model_runner)
         return ret
 
+    # NOTE: I think that flattening bsz dim works because each batch has different locations in the out_cache_loc.
+    # Radix Attention seems to deal with it then.
     def draft_forward(self, forward_batch: ForwardBatch):
         # Parse args
         spec_info = forward_batch.spec_info
         out_cache_loc = forward_batch.out_cache_loc
-        topk_p, topk_index, hidden_states = (
+        topk_p, topk_index = (
             spec_info.topk_p,
             spec_info.topk_index,
-            spec_info.hidden_states,
         )
+
+        # print(f"topk_p: {topk_p.shape}, topk_index: {topk_index.shape}") # [bsz, topk], [bsz, topk]
 
         # Return values
         score_list: List[torch.Tensor] = []
         token_list: List[torch.Tensor] = []
         parents_list: List[torch.Tensor] = []
 
+        spec_info.hidden_states = spec_info.hidden_states.repeat_interleave(self.topk, dim=0)
+        # print(f"spec_info.hidden_states: {spec_info.hidden_states.shape}") # [bsz * topk, hidden_size]
         # Forward multiple steps
         scores = None
         for i in range(self.speculative_num_steps):
-            input_ids, hidden_states, scores, tree_info = select_top_k_tokens(
-                i, topk_p, topk_index, hidden_states, scores, self.topk
+            input_ids, scores, tree_info = select_top_k_tokens( # difference: no hidden_states
+                i, topk_p, topk_index, scores, self.topk
             )
             score_list.append(tree_info[0])
             token_list.append(tree_info[1])
@@ -258,39 +322,43 @@ class EAGLEWorker(TpModelWorker):
                 * self.topk
                 * (i + 1)
             ]
-            forward_batch.positions.add_(1)
+            forward_batch.positions.add_(1) # advance the autoregression
             forward_batch.attn_backend = self.draft_attn_backend.attn_backends[i]
-            spec_info.hidden_states = hidden_states                                 
-
+            # spec_info.hidden_states = hidden_states                                 # NOTE: could be as simple as removing this line
+ 
             # Run forward
-            logits_output = self.model_runner.model.forward(
+            logits_output = self.model_runner.model.forward(                          # Draft pass
                 forward_batch.input_ids, forward_batch.positions, forward_batch
             )
             probs = torch.softmax(logits_output.next_token_logits, dim=-1)
             topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
-            hidden_states = logits_output.hidden_states                             
+            # hidden_states = logits_output.hidden_states                             # NOTE: and this one
+
+            # if i <= 1:
+            #     print(f"Iteration {i}")
+            #     print(f"forward_batch.input_ids: {forward_batch.input_ids.shape}") # [bsz * topk]
+            #     print(f"forward_batch.positions: {forward_batch.positions.shape}") # [bsz * topk]
+            #     print(f"spec_info.hidden_states: {spec_info.hidden_states.shape}") # [bsz * topk, hidden_size]
+            #     print(f"forward_batch.spec_info.hidden_states: {forward_batch.spec_info.hidden_states.shape}") # [bsz * topk, hidden_size]
+            #     print(f"logits_output: {logits_output.next_token_logits.shape}") # [bsz * topk, vocab_size]
+            #     print(f"Score: tree_info[0]: {tree_info[0].shape}") # [bsz, topk, topk]
+            #     print(f"Token: tree_info[1]: {tree_info[1].shape}") # [bsz, topk**2]
+            #     print(f"Parents: tree_info[2]: {tree_info[2].shape}")  # [bsz, topk]
+
+
 
         return score_list, token_list, parents_list
-
-    def verify(self, batch: ScheduleBatch, spec_info: EagleVerifyInput):
-        spec_info.prepare_for_verify(batch)
-        batch.forward_mode = ForwardMode.TARGET_VERIFY
-        batch.spec_info = spec_info
-        model_worker_batch = batch.get_model_worker_batch()
-        logits_output, _ = self.target_worker.forward_batch_generation(
-            model_worker_batch, skip_sample=True
-        )
-        spec_info.hidden_states = logits_output.hidden_states
-        res = spec_info.verify(batch, logits_output)
-        batch.forward_mode = ForwardMode.DECODE
-        return res + (model_worker_batch,)
 
     def forward_draft_extend(self, batch: ScheduleBatch):
         self._set_mem_pool(batch, self.model_runner)
         batch.spec_info.prepare_for_extend(batch)
+
         batch.spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
         model_worker_batch = batch.get_model_worker_batch()
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
+
+        # TLDR the model_runner's forward takes into account the forward model, model_runner.model.forward is the actual forward.
+
         logits_output = self.model_runner.forward(forward_batch)
         self.capture_for_decode(logits_output, forward_batch)
         self._set_mem_pool(batch, self.target_worker.model_runner)
@@ -299,18 +367,28 @@ class EAGLEWorker(TpModelWorker):
         batch.token_to_kv_pool = runner.token_to_kv_pool
         batch.req_to_token_pool = runner.req_to_token_pool
 
-    def forward_draft_extend_after_decode(self, batch: ScheduleBatch):
+    def forward_draft_extend_after_decode(self, batch: ScheduleBatch, logits_output: LogitsProcessorOutput):
         seq_lens_backup = batch.seq_lens
         req_pool_indices_backup = batch.req_pool_indices
 
         self._set_mem_pool(batch, self.model_runner)
         batch.forward_mode = ForwardMode.DRAFT_EXTEND
+
         batch.spec_info.prepare_extend_after_decode(batch, self.speculative_num_steps)
+
         batch.spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
+        # batch.spec_info.capture_hidden_mode = CaptureHiddenMode.NULL
         model_worker_batch = batch.get_model_worker_batch()
-        forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
-        logits_output = self.model_runner.forward(forward_batch)
-        self.capture_for_decode(logits_output, forward_batch)
+
+
+        # BUG: Phoenix does not use hidden state sampled from draft model. Instead of [h0, h1', h1', h1'], it uses [h0, h0, h0, h0].
+        # For some reason, doing the former works better?? Look into this later.
+        forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner) 
+        new_logits_output = self.model_runner.forward(forward_batch)            # does the KV refresh for draft model
+
+
+        new_logits_output.hidden_states = logits_output.hidden_states[batch.spec_info.accept_length-1] # NOTE: uncomment for EAGLE like behavior
+        self.capture_for_decode(new_logits_output, forward_batch)
         self._set_mem_pool(batch, self.target_worker.model_runner)
 
         # Restore backup.

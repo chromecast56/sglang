@@ -246,10 +246,13 @@ class Scheduler:
         )
 
         # Launch a worker for speculative decoding if needed
-        if self.spec_algorithm.is_eagle():
+        if self.spec_algorithm.is_eagle() or self.spec_algorithm.is_phoenix():
             from sglang.srt.speculative.eagle_worker import EAGLEWorker
+            from sglang.srt.speculative.phoenix_worker import PhoenixWorker
 
-            self.draft_worker = EAGLEWorker(
+            Worker = EAGLEWorker if self.spec_algorithm.is_eagle() else PhoenixWorker
+
+            self.draft_worker = Worker(
                 gpu_id=gpu_id,
                 tp_rank=tp_rank,
                 server_args=server_args,

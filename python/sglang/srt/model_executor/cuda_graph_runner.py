@@ -174,7 +174,7 @@ class CudaGraphRunner:
         self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(model_runner)
         self.capture_forward_mode = ForwardMode.DECODE
         self.num_tokens_per_bs = 1
-        if model_runner.spec_algorithm.is_eagle():
+        if model_runner.spec_algorithm.is_eagle() or model_runner.spec_algorithm.is_phoenix():
             if self.model_runner.is_draft_worker:
                 raise RuntimeError("This should not happen")
             else:
@@ -182,6 +182,15 @@ class CudaGraphRunner:
                 self.num_tokens_per_bs = (
                     self.model_runner.server_args.speculative_num_draft_tokens
                 )
+
+                # if model_runner.spec_algorithm.is_eagle():
+                #     self.num_tokens_per_bs = (
+                #         self.model_runner.server_args.speculative_num_draft_tokens
+                #     )
+                # else:
+                #     self.num_tokens_per_bs = (
+                #         2 * self.model_runner.server_args.speculative_num_draft_tokens
+                #     )
 
         # Attention backend
         self.max_bs = max(self.capture_bs)
@@ -208,7 +217,7 @@ class CudaGraphRunner:
             self.mrope_positions = torch.zeros((3, self.max_bs), dtype=torch.int64)
 
             # Speculative_inference
-            if model_runner.spec_algorithm.is_eagle():
+            if model_runner.spec_algorithm.is_eagle() or model_runner.spec_algorithm.is_phoenix():
                 self.hidden_states = torch.zeros(
                     (self.max_num_token, self.model_runner.model_config.hidden_size),
                     dtype=self.model_runner.dtype,
@@ -459,13 +468,16 @@ class CudaGraphRunner:
 
     def get_spec_info(self, num_tokens: int):
         spec_info = None
-        if self.model_runner.spec_algorithm.is_eagle():
+        if self.model_runner.spec_algorithm.is_eagle() or self.model_runner.spec_algorithm.is_phoenix():
             from sglang.srt.speculative.eagle_utils import EagleVerifyInput
+            from sglang.srt.speculative.phoenix_utils import PhoenixVerifyInput
+            VerifyInput = EagleVerifyInput if self.model_runner.spec_algorithm.is_eagle() else PhoenixVerifyInput
+            
 
             if self.model_runner.is_draft_worker:
                 raise RuntimeError("This should not happen.")
             else:
-                spec_info = EagleVerifyInput(
+                spec_info = VerifyInput(
                     draft_token=None,
                     custom_mask=torch.zeros(
                         (num_tokens * self.model_runner.model_config.context_len),
@@ -481,5 +493,6 @@ class CudaGraphRunner:
                     spec_steps=self.model_runner.server_args.speculative_num_steps,
                     capture_hidden_mode=CaptureHiddenMode.FULL,
                 )
+
 
         return spec_info

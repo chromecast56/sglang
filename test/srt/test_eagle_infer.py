@@ -18,7 +18,7 @@ from sglang.test.test_utils import (
     popen_launch_server,
 )
 
-
+# NOTE: TestEAGLEEngine is the only relevant thing for us (model level)
 class TestEAGLEEngine(unittest.TestCase):
     BASE_CONFIG = {
         "model_path": DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST,
@@ -104,125 +104,125 @@ prompts = [
 ]
 
 
-class TestEAGLEServer(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.base_url = DEFAULT_URL_FOR_TEST
-        cls.process = popen_launch_server(
-            DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST,
-            cls.base_url,
-            timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
-            other_args=[
-                "--speculative-algorithm",
-                "EAGLE",
-                "--speculative-draft-model-path",
-                DEFAULT_EAGLE_DRAFT_MODEL_FOR_TEST,
-                "--speculative-num-steps",
-                "5",
-                "--speculative-eagle-topk",
-                "8",
-                "--speculative-num-draft-tokens",
-                "64",
-                "--mem-fraction-static",
-                "0.7",
-                "--cuda-graph-max-bs",
-                "32",
-            ],
-        )
+# class TestEAGLEServer(unittest.TestCase):
+#     @classmethod
+#     def setUpClass(cls):
+#         cls.base_url = DEFAULT_URL_FOR_TEST
+#         cls.process = popen_launch_server(
+#             DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST,
+#             cls.base_url,
+#             timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
+#             other_args=[
+#                 "--speculative-algorithm",
+#                 "EAGLE",
+#                 "--speculative-draft-model-path",
+#                 DEFAULT_EAGLE_DRAFT_MODEL_FOR_TEST,
+#                 "--speculative-num-steps",
+#                 "5",
+#                 "--speculative-eagle-topk",
+#                 "8",
+#                 "--speculative-num-draft-tokens",
+#                 "64",
+#                 "--mem-fraction-static",
+#                 "0.7",
+#                 "--cuda-graph-max-bs",
+#                 "32",
+#             ],
+#         )
 
-    @classmethod
-    def tearDownClass(cls):
-        kill_process_tree(cls.process.pid)
+#     @classmethod
+#     def tearDownClass(cls):
+#         kill_process_tree(cls.process.pid)
 
-    def send_request(self):
-        time.sleep(random.uniform(0, 2))
-        for prompt in prompts:
-            url = self.base_url + "/generate"
-            data = {
-                "text": prompt,
-                "sampling_params": {
-                    "temperature": 0,
-                    "max_new_tokens": 1024,
-                },
-            }
-            response = requests.post(url, json=data)
-            assert response.status_code == 200
+#     def send_request(self):
+#         time.sleep(random.uniform(0, 2))
+#         for prompt in prompts:
+#             url = self.base_url + "/generate"
+#             data = {
+#                 "text": prompt,
+#                 "sampling_params": {
+#                     "temperature": 0,
+#                     "max_new_tokens": 1024,
+#                 },
+#             }
+#             response = requests.post(url, json=data)
+#             assert response.status_code == 200
 
-    def send_requests_abort(self):
-        for prompt in prompts:
-            try:
-                time.sleep(random.uniform(0, 2))
-                url = self.base_url + "/generate"
-                data = {
-                    "model": "base",
-                    "text": prompt,
-                    "sampling_params": {
-                        "temperature": 0,
-                        "max_new_tokens": 1024,
-                    },
-                }
-                # set timeout = 1s,mock disconnected
-                requests.post(url, json=data, timeout=1)
-            except Exception as e:
-                print(e)
-                pass
+#     def send_requests_abort(self):
+#         for prompt in prompts:
+#             try:
+#                 time.sleep(random.uniform(0, 2))
+#                 url = self.base_url + "/generate"
+#                 data = {
+#                     "model": "base",
+#                     "text": prompt,
+#                     "sampling_params": {
+#                         "temperature": 0,
+#                         "max_new_tokens": 1024,
+#                     },
+#                 }
+#                 # set timeout = 1s,mock disconnected
+#                 requests.post(url, json=data, timeout=1)
+#             except Exception as e:
+#                 print(e)
+#                 pass
 
-    def test_request_abort(self):
-        concurrency = 4
-        threads = [
-            threading.Thread(target=self.send_request) for _ in range(concurrency)
-        ] + [
-            threading.Thread(target=self.send_requests_abort)
-            for _ in range(concurrency)
-        ]
-        for worker in threads:
-            worker.start()
-        for p in threads:
-            p.join()
+#     def test_request_abort(self):
+#         concurrency = 4
+#         threads = [
+#             threading.Thread(target=self.send_request) for _ in range(concurrency)
+#         ] + [
+#             threading.Thread(target=self.send_requests_abort)
+#             for _ in range(concurrency)
+#         ]
+#         for worker in threads:
+#             worker.start()
+#         for p in threads:
+#             p.join()
 
-    def test_gsm8k(self):
-        args = SimpleNamespace(
-            num_shots=5,
-            data_path=None,
-            num_questions=200,
-            max_new_tokens=512,
-            parallel=128,
-            host="http://127.0.0.1",
-            port=int(self.base_url.split(":")[-1]),
-        )
-        metrics = run_eval(args)
-        print(f"{metrics=}")
+#     def test_gsm8k(self):
+#         args = SimpleNamespace(
+#             num_shots=5,
+#             data_path=None,
+#             num_questions=200,
+#             max_new_tokens=512,
+#             parallel=128,
+#             host="http://127.0.0.1",
+#             port=int(self.base_url.split(":")[-1]),
+#         )
+#         metrics = run_eval(args)
+#         print(f"{metrics=}")
 
-        self.assertGreater(metrics["accuracy"], 0.20)
+#         self.assertGreater(metrics["accuracy"], 0.20)
 
 
-class TestEAGLEServerTriton(TestEAGLEServer):
-    @classmethod
-    def setUpClass(cls):
-        cls.base_url = DEFAULT_URL_FOR_TEST
-        cls.process = popen_launch_server(
-            DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST,
-            cls.base_url,
-            timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
-            other_args=[
-                "--speculative-algorithm",
-                "EAGLE",
-                "--speculative-draft-model-path",
-                DEFAULT_EAGLE_DRAFT_MODEL_FOR_TEST,
-                "--speculative-num-steps",
-                "5",
-                "--speculative-eagle-topk",
-                "8",
-                "--speculative-num-draft-tokens",
-                "64",
-                "--mem-fraction-static",
-                "0.7",
-                "--attention-backend",
-                "triton",
-                "--cuda-graph-max-bs",
-                "32",
-            ],
-        )
+# class TestEAGLEServerTriton(TestEAGLEServer):
+#     @classmethod
+#     def setUpClass(cls):
+#         cls.base_url = DEFAULT_URL_FOR_TEST
+#         cls.process = popen_launch_server(
+#             DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST,
+#             cls.base_url,
+#             timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
+#             other_args=[
+#                 "--speculative-algorithm",
+#                 "EAGLE",
+#                 "--speculative-draft-model-path",
+#                 DEFAULT_EAGLE_DRAFT_MODEL_FOR_TEST,
+#                 "--speculative-num-steps",
+#                 "5",
+#                 "--speculative-eagle-topk",
+#                 "8",
+#                 "--speculative-num-draft-tokens",
+#                 "64",
+#                 "--mem-fraction-static",
+#                 "0.7",
+#                 "--attention-backend",
+#                 "triton",
+#                 "--cuda-graph-max-bs",
+#                 "32",
+#             ],
+#         )
 
 
 if __name__ == "__main__":

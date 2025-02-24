@@ -33,6 +33,9 @@ from sglang.srt.layers.linear import (
     MergedColumnParallelLinear,
     QKVParallelLinear,
     RowParallelLinear,
+    LoRALinear,
+    LoRAGateUpLinear,
+    LoRAQKVLinear
 )
 from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.pooler import Pooler, PoolingType
@@ -57,6 +60,7 @@ logger = logging.getLogger(__name__)
 class LlamaMLP(nn.Module):
     def __init__(
         self,
+        config: LlamaConfig,
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
@@ -64,19 +68,33 @@ class LlamaMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
-            hidden_size,
-            [intermediate_size] * 2,
-            bias=False,
-            quant_config=quant_config,
+        # self.gate_up_proj = MergedColumnParallelLinear(
+        #     hidden_size,
+        #     [intermediate_size] * 2,
+        #     bias=False,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.gate_up_proj",
+        # )
+
+        self.gate_up_proj = LoRAGateUpLinear(
+            input_size=hidden_size,
+            intermediate_size=intermediate_size,
             prefix=f"{prefix}.gate_up_proj",
+            lora_rank=config.lora_rank,
         )
-        self.down_proj = RowParallelLinear(
-            intermediate_size,
-            hidden_size,
-            bias=False,
-            quant_config=quant_config,
+
+        # self.down_proj = RowParallelLinear(
+        #     intermediate_size,
+        #     hidden_size,
+        #     bias=False,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.down_proj",
+        # )
+        self.down_proj = LoRALinear(
+            input_size=intermediate_size,
+            output_size=hidden_size,
             prefix=f"{prefix}.down_proj",
+            lora_rank=config.lora_rank,
         )
         if hidden_act != "silu":
             raise ValueError(
@@ -85,10 +103,13 @@ class LlamaMLP(nn.Module):
             )
         self.act_fn = SiluAndMul()
 
-    def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
+    def forward(self, x, forward_batch):
+        # gate_up, _ = self.gate_up_proj(x)
+        gate_up = self.gate_up_proj(x, forward_batch)
         x = self.act_fn(gate_up)
-        x, _ = self.down_proj(x)
+        # x, _ = self.down_proj(x)
+
+        x = self.down_proj(x, forward_batch)
         return x
 
 
@@ -134,21 +155,36 @@ class LlamaAttention(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
-        self.qkv_proj = QKVParallelLinear(
-            hidden_size,
-            self.head_dim,
-            self.total_num_heads,
-            self.total_num_kv_heads,
-            bias=bias,
-            quant_config=quant_config,
+        # self.qkv_proj = QKVParallelLinear(
+        #     hidden_size,
+        #     self.head_dim,
+        #     self.total_num_heads,
+        #     self.total_num_kv_heads,
+        #     bias=bias,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.qkv_proj",
+        # )
+
+        self.qkv_proj = LoRAQKVLinear(
+            input_size=hidden_size,
+            head_dim=self.head_dim,
+            total_num_heads=self.total_num_heads,
+            total_num_kv_heads=self.total_num_kv_heads,
             prefix=f"{prefix}.qkv_proj",
+            lora_rank=config.lora_rank,
         )
-        self.o_proj = RowParallelLinear(
-            self.total_num_heads * self.head_dim,
-            hidden_size,
-            bias=bias,
-            quant_config=quant_config,
+        # self.o_proj = RowParallelLinear(
+        #     self.total_num_heads * self.head_dim,
+        #     hidden_size,
+        #     bias=bias,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.o_proj",
+        # )
+        self.o_proj = LoRALinear(
+            input_size=self.total_num_heads * self.head_dim,
+            output_size=hidden_size,
             prefix=f"{prefix}.o_proj",
+            lora_rank=config.lora_rank,
         )
 
         self.rotary_emb = get_rope(
@@ -173,11 +209,13 @@ class LlamaAttention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
+        # qkv, _ = self.qkv_proj(hidden_states)
+        qkv = self.qkv_proj(hidden_states, forward_batch)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, forward_batch)
-        output, _ = self.o_proj(attn_output)
+        # output, _ = self.o_proj(attn_output)
+        output = self.o_proj(attn_output, forward_batch)
         return output
 
 
@@ -221,6 +259,7 @@ class LlamaDecoderLayer(nn.Module):
             bias=attention_bias,
         )
         self.mlp = LlamaMLP(
+            config=config,
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
@@ -253,7 +292,7 @@ class LlamaDecoderLayer(nn.Module):
 
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, forward_batch)
         return hidden_states, residual
 
 
@@ -330,7 +369,7 @@ class LlamaModel(nn.Module):
                 )
 
 
-class LlamaForCausalLM(nn.Module):
+class LlamaForCausalLMLoRA(nn.Module):
 
     # BitandBytes specific attributes
     default_bitsandbytes_target_modules = [
@@ -436,45 +475,72 @@ class LlamaForCausalLM(nn.Module):
         params_dict = dict(self.named_parameters())
         return len(params_dict)
 
+    # NOTE: To extend to TP, need to make MergedColumnParallelLinear and QKVParallelLinears
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
-            (".qkv_proj", ".q_proj", "q"),
-            (".qkv_proj", ".k_proj", "k"),
-            (".qkv_proj", ".v_proj", "v"),
-            (".gate_up_proj", ".gate_proj", 0),
-            (".gate_up_proj", ".up_proj", 1),
+            # (".qkv_proj", ".q_proj", "q"),
+            # (".qkv_proj", ".k_proj", "k"),
+            # (".qkv_proj", ".v_proj", "v"),
+            # (".gate_up_proj", ".gate_proj", 0),
+            # (".gate_up_proj", ".up_proj", 1),
+            (".qkv_proj.W_A", ".q_proj.base_layer", "q_base"),
+            (".qkv_proj.W_A", ".q_proj.lora_A", "q_lora_A"),
+            (".qkv_proj.B", ".q_proj.lora_B", "q_lora_B"),
+            (".qkv_proj.W_A", ".k_proj.base_layer", "k_base"),
+            (".qkv_proj.W_A", ".k_proj.lora_A", "k_lora_A"),
+            (".qkv_proj.B", ".k_proj.lora_B", "k_lora_B"),
+            (".qkv_proj.W_A", ".v_proj.base_layer", "v_base"),
+            (".qkv_proj.W_A", ".v_proj.lora_A", "v_lora_A"),
+            (".qkv_proj.B", ".v_proj.lora_B", "v_lora_B"),
+            (".o_proj.W_A", ".o_proj.base_layer", "W"),
+            (".o_proj.W_A", ".o_proj.lora_A", "A"),
+            (".o_proj.B", ".o_proj.lora_B", "B"),
+            (".gate_up_proj.W_A", ".gate_proj.base_layer", "gate_base"),
+            (".gate_up_proj.W_A", ".gate_proj.lora_A", "gate_lora_A"),
+            (".gate_up_proj.B", ".gate_proj.lora_B", "gate_lora_B"),
+            (".gate_up_proj.W_A", ".up_proj.base_layer", "up_base"),
+            (".gate_up_proj.W_A", ".up_proj.lora_A", "up_lora_A"),
+            (".gate_up_proj.B", ".up_proj.lora_B", "up_lora_B"),
+            (".down_proj.W_A", ".down_proj.base_layer", "W"),
+            (".down_proj.W_A", ".down_proj.lora_A", "A"),
+            (".down_proj.B", ".down_proj.lora_B", "B"),
         ]
 
         params_dict = dict(self.named_parameters())
         # print(params_dict.keys())
 
-        for name, loaded_weight in weights:
+        for name, loaded_weight in weights:                                         # iterate over weights in checkpoint
             # print(name)
             if "rotary_emb.inv_freq" in name or "projector" in name:
                 continue
-            if "rotary_emb.cos_cached" in name or "rotary_emb.sin_cached" in name:
-                # Models trained using ColossalAI may include these tensors in
-                # the checkpoint. Skip them.
-                continue
-            if name.startswith("model.vision_tower") and name not in params_dict:
-                continue
+            # if "rotary_emb.cos_cached" in name or "rotary_emb.sin_cached" in name:
+            #     # Models trained using ColossalAI may include these tensors in
+            #     # the checkpoint. Skip them.
+            #     continue
+            # if name.startswith("model.vision_tower") and name not in params_dict:
+            #     continue
 
-            for param_name, weight_name, shard_id in stacked_params_mapping:
+            for param_name, weight_name, shard_id in stacked_params_mapping:       # iterate over weights in model (qkv_proj, gate_up_proj)
                 if weight_name not in name:
                     continue
-                name = name.replace(weight_name, param_name)
-                # Skip loading extra bias for GPTQ models.
-                if name.endswith(".bias") and name not in params_dict:
-                    continue
-                param = params_dict[name]
+
+                # only if there's a match
+                name = name.replace(weight_name, param_name)                       # q_proj --> qkv_proj
+                # # Skip loading extra bias for GPTQ models.
+                # if name.endswith(".bias") and name not in params_dict:
+                #     continue
+                param = params_dict[name]                                          # get param in model
                 weight_loader = param.weight_loader
-                weight_loader(param, loaded_weight, shard_id)
+                weight_loader(param, loaded_weight, shard_id)                      # call weight loader(qkv_proj, "q")
                 break
+
+            # wtf? if for loop ends without break, this happens.
+            # This corresponds to regular layers (not fused)
             else:
-                # Skip loading extra bias for GPTQ models.
-                if name.endswith(".bias") and name not in params_dict:
-                    continue
+                # # Skip loading extra bias for GPTQ models.
+                # if name.endswith(".bias") and name not in params_dict:
+                #     continue
                 # Skip loading kv_scale from ckpts towards new design.
                 if name.endswith(".kv_scale") and name not in params_dict:
                     continue
@@ -590,12 +656,6 @@ class LlamaForCausalLM(nn.Module):
         self.model.load_kv_cache_scales(quantization_param_path)
 
 
-class Phi3ForCausalLM(LlamaForCausalLM):
-    pass
 
 
-class InternLM3ForCausalLM(LlamaForCausalLM):
-    pass
-
-
-EntryClass = [LlamaForCausalLM, Phi3ForCausalLM, InternLM3ForCausalLM]
+EntryClass = [LlamaForCausalLMLoRA]
