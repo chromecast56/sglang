@@ -399,7 +399,7 @@ class LoRALinear(LinearBase):
         
  
     def forward(self, input_, forward_batch):
-        if forward_batch.forward_mode.is_decode:
+        if forward_batch.forward_mode.is_decode():
             return fast_lora(input_, self.W_A.weight.data, self.B.weight.data)
         else:
             return matmul(input_, self.W_A.weight.data, self.B.weight.data)
@@ -584,6 +584,7 @@ class LoRAQKVLinear(LoRALinear):
             param.data[self.query_size+2*self.keyvalue_size:].copy_(loaded_weight)
         elif loaded_shard_id == "q_lora_B":
             param.data[:self.query_size,:].copy_(loaded_weight)
+            assert param.data[self.query_size:].sum() == 0
         else:
             return
             # print(f"Assuming that {loaded_shard_id} is zero")
