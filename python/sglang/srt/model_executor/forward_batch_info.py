@@ -70,6 +70,10 @@ class ForwardMode(IntEnum):
     # It is now used for triggering the sampling_info_done event for the first prefill batch.
     DUMMY_FIRST = auto()
 
+
+    EXTEND_NOLORA = auto()
+    EXTEND_LORA = auto()
+
     def is_prefill(self):
         return self == ForwardMode.PREFILL
 
@@ -79,6 +83,8 @@ class ForwardMode(IntEnum):
             or self == ForwardMode.MIXED
             or self == ForwardMode.DRAFT_EXTEND
             or self == self.TARGET_VERIFY
+            or self == self.EXTEND_NOLORA
+            or self == self.EXTEND_LORA
         )
 
     def is_decode(self):
@@ -108,6 +114,12 @@ class ForwardMode(IntEnum):
 
     def is_decode_or_idle(self):
         return self == ForwardMode.DECODE or self == ForwardMode.IDLE
+    
+    def is_nolora(self):
+        return self == ForwardMode.EXTEND_NOLORA
+
+    def is_lora(self):
+        return self == ForwardMode.EXTEND_LORA
 
 
 class CaptureHiddenMode(IntEnum):

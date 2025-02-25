@@ -136,7 +136,6 @@ class PhoenixWorker(TpModelWorker):
             # TLDR: 
             batch.spec_info = next_draft_input
 
-            # print("logits_output.hidden_states: ", logits_output.hidden_states.shape) # [bsz*num_tokens, hidden_size]
             # if it is None, means all requsets are finished
             if batch.spec_info.verified_id is not None:
                 self.forward_draft_extend_after_decode(batch)
@@ -148,31 +147,41 @@ class PhoenixWorker(TpModelWorker):
             )
 
         else:
-            # print("Starting Prefill")
-            # Forward with the target model and get hidden states.
-            # We need the full hidden states to prefill the KV cache of the draft model.
-            model_worker_batch = batch.get_model_worker_batch()
-            # print("FORWARD MODE: ", model_worker_batch.forward_mode)
-            # WTF ? Why is the forward mode EXTEND and not PREFILL ?
+            if self.server_args.speculative_phoenix_is_lora:
+                model_worker_batch_temp = batch.get_model_worker_batch()
+                # WTF ? Why is the forward mode EXTEND and not PREFILL ?
+                # NOTE: its because PREFILL is depreciated.
 
-            model_worker_batch.capture_hidden_mode = CaptureHiddenMode.FULL
-            logits_output, next_token_ids = self.target_worker.forward_batch_generation(
-                model_worker_batch
-            )
-            # logits_output, _ = self.target_worker.forward_batch_generation(
-            #     model_worker_batch, skip_sample=True
-            # )
-            
+                model_worker_batch_temp.capture_hidden_mode = CaptureHiddenMode.FULL
+                model_worker_batch_temp.forward_mode = ForwardMode.EXTEND_LORA
+                # model_worker_batch.forward_mode = ForwardMode.EXTEND_NOLORA
+                model_worker_batch_temp.save_kv_cache = False
+                # Step 1: Get LoRA hidden states
+                logits_output_temp, _ = self.target_worker.forward_batch_generation(
+                    model_worker_batch_temp
+                )
 
-            # TODO: the "one extra pass" logic. Currently, first acc length will always be bad.
+                # save hidden states
+                hidden_states = logits_output_temp.hidden_states
 
-            # TODO: Here, we will rerun the forward of the target for the very last token, with the lora branch (bsz 2).
-            # OR: we just tank the hit of the n draft passes, which is not relatively significant.
+                model_worker_batch = batch.get_model_worker_batch()
+                model_worker_batch.forward_mode = ForwardMode.EXTEND_NOLORA
+                model_worker_batch.capture_hidden_mode = CaptureHiddenMode.NULL
+                # Step 2: Get base KVs and next token ids
+                logits_output, next_token_ids = self.target_worker.forward_batch_generation(
+                    model_worker_batch
+                )
+            else:
+                model_worker_batch = batch.get_model_worker_batch()
+                model_worker_batch.capture_hidden_mode = CaptureHiddenMode.FULL
+                logits_output, next_token_ids = self.target_worker.forward_batch_generation(
+                    model_worker_batch
+                )
+                
+                hidden_states = logits_output.hidden_states
 
-            # print("logits_output.hidden_states: ", logits_output.hidden_states.shape) # [seq_len, hidden_size]
-            # Forward with the draft model.
             batch.spec_info = PhoenixDraftInput(
-                hidden_states=logits_output.hidden_states,
+                hidden_states=hidden_states,
                 verified_id=next_token_ids,
             )
             self.forward_draft_extend(batch)
@@ -360,13 +369,16 @@ class PhoenixWorker(TpModelWorker):
         self._set_mem_pool(batch, self.model_runner)
         batch.spec_info.prepare_for_extend(batch)
 
-        batch.spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
+        # batch.spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
+        batch.spec_info.capture_hidden_mode = CaptureHiddenMode.NULL
+
         model_worker_batch = batch.get_model_worker_batch()
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
 
-        # TLDR the model_runner's forward takes into account the forward model, model_runner.model.forward is the actual forward.
-
         logits_output = self.model_runner.forward(forward_batch)
+        logits_output.hidden_states = batch.spec_info.hidden_states[-1:]
+
+
         self.capture_for_decode(logits_output, forward_batch)
         self._set_mem_pool(batch, self.target_worker.model_runner)
 
@@ -389,9 +401,8 @@ class PhoenixWorker(TpModelWorker):
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner) 
         logits_output = self.model_runner.forward(forward_batch)            # does the KV refresh for draft model
 
-        logits_output.hidden_states = batch.spec_info.hidden_states[-1:] # NOTE: uncomment for EAGLE like behavior
+        logits_output.hidden_states = batch.spec_info.hidden_states[-1:]
 
-        # print("new_logits_output.hidden_states: ", new_logits_output.hidden_states.shape)
         self.capture_for_decode(logits_output, forward_batch)
         self._set_mem_pool(batch, self.target_worker.model_runner)
 

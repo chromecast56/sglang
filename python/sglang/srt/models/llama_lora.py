@@ -68,24 +68,26 @@ class LlamaMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        # self.gate_proj = LoRALinear(
-        #     input_size=hidden_size,
-        #     output_size=intermediate_size,
-        #     prefix=f"{prefix}.gate_proj",
-        #     lora_rank=config.lora_rank,
-        # )
-        # self.up_proj = LoRALinear(
-        #     input_size=hidden_size,
-        #     output_size=intermediate_size,
-        #     prefix=f"{prefix}.up_proj",
-        #     lora_rank=config.lora_rank,
-        # )
-        self.gate_up_proj = LoRAGateUpLinear(
+        self.gate_proj = LoRALinear(
             input_size=hidden_size,
-            intermediate_size=intermediate_size,
-            prefix=f"{prefix}.gate_up_proj",
+            output_size=intermediate_size,
+            prefix=f"{prefix}.gate_proj",
             lora_rank=config.lora_rank,
         )
+        self.up_proj = LoRALinear(
+            input_size=hidden_size,
+            output_size=intermediate_size,
+            prefix=f"{prefix}.up_proj",
+            lora_rank=config.lora_rank,
+        )
+
+
+        # self.gate_up_proj = LoRAGateUpLinear(
+        #     input_size=hidden_size,
+        #     intermediate_size=intermediate_size,
+        #     prefix=f"{prefix}.gate_up_proj",
+        #     lora_rank=config.lora_rank,
+        # )
         self.down_proj = LoRALinear(
             input_size=intermediate_size,
             output_size=hidden_size,
@@ -100,8 +102,10 @@ class LlamaMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x, forward_batch):
-        gate_up = self.gate_up_proj(x, forward_batch)
-        # gate_up = torch.cat([self.gate_proj(x, forward_batch), self.up_proj(x, forward_batch)], dim=-1)
+        # gate_up = self.gate_up_proj(x, forward_batch)
+
+        gate_up = torch.cat([self.gate_proj(x, forward_batch), self.up_proj(x, forward_batch)], dim=-1)
+
         x = self.act_fn(gate_up)
 
         x = self.down_proj(x, forward_batch)
@@ -151,33 +155,33 @@ class LlamaAttention(nn.Module):
         self.max_position_embeddings = max_position_embeddings
 
 
-        # self.q_proj = LoRALinear(
-        #     input_size=hidden_size,
-        #     output_size=self.total_num_heads * self.head_dim,
-        #     prefix=f"{prefix}.q_proj",
-        #     lora_rank=config.lora_rank,
-        # )
-        # self.k_proj = LoRALinear(
-        #     input_size=hidden_size,
-        #     output_size=self.total_num_kv_heads * self.head_dim,
-        #     prefix=f"{prefix}.k_proj",
-        #     lora_rank=config.lora_rank,
-        # )
-        # self.v_proj = LoRALinear(
-        #     input_size=hidden_size,
-        #     output_size=self.total_num_kv_heads * self.head_dim,
-        #     prefix=f"{prefix}.v_proj",
-        #     lora_rank=config.lora_rank,
-        # )
-        
-        self.qkv_proj = LoRAQKVLinear(
+        self.q_proj = LoRALinear(
             input_size=hidden_size,
-            head_dim=self.head_dim,
-            total_num_heads=self.total_num_heads,
-            total_num_kv_heads=self.total_num_kv_heads,
-            prefix=f"{prefix}.qkv_proj",
+            output_size=self.total_num_heads * self.head_dim,
+            prefix=f"{prefix}.q_proj",
             lora_rank=config.lora_rank,
         )
+        self.k_proj = LoRALinear(
+            input_size=hidden_size,
+            output_size=self.total_num_kv_heads * self.head_dim,
+            prefix=f"{prefix}.k_proj",
+            lora_rank=config.lora_rank,
+        )
+        self.v_proj = LoRALinear(
+            input_size=hidden_size,
+            output_size=self.total_num_kv_heads * self.head_dim,
+            prefix=f"{prefix}.v_proj",
+            lora_rank=config.lora_rank,
+        )
+        
+        # self.qkv_proj = LoRAQKVLinear(
+        #     input_size=hidden_size,
+        #     head_dim=self.head_dim,
+        #     total_num_heads=self.total_num_heads,
+        #     total_num_kv_heads=self.total_num_kv_heads,
+        #     prefix=f"{prefix}.qkv_proj",
+        #     lora_rank=config.lora_rank,
+        # )
         self.o_proj = LoRALinear(
             input_size=self.total_num_heads * self.head_dim,
             output_size=hidden_size,
@@ -207,13 +211,17 @@ class LlamaAttention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        qkv = self.qkv_proj(hidden_states, forward_batch)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        # q = self.q_proj(hidden_states, forward_batch)
-        # k = self.k_proj(hidden_states, forward_batch)
-        # v = self.v_proj(hidden_states, forward_batch)
+        # qkv = self.qkv_proj(hidden_states, forward_batch)
+        # q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+
+        save_kv_cache = False if hasattr(forward_batch, "save_kv_cache") and not forward_batch.save_kv_cache else True
+
+        q = self.q_proj(hidden_states, forward_batch)
+        k = self.k_proj(hidden_states, forward_batch)
+        v = self.v_proj(hidden_states, forward_batch)
+
         q, k = self.rotary_emb(positions, q, k)
-        attn_output = self.attn(q, k, v, forward_batch)
+        attn_output = self.attn(q, k, v, forward_batch, save_kv_cache=save_kv_cache)
         # output, _ = self.o_proj(attn_output)
         output = self.o_proj(attn_output, forward_batch)
         return output
@@ -436,6 +444,7 @@ class LlamaForCausalLMLoRA(nn.Module):
                 input_ids, hidden_states, self.lm_head, forward_batch
             )
         else:
+            print("BAD")
             return self.pooler(hidden_states, forward_batch)
 
     def get_hidden_dim(self, module_name):
@@ -478,52 +487,52 @@ class LlamaForCausalLMLoRA(nn.Module):
 
     # NOTE: To extend to TP, need to make MergedColumnParallelLinear and QKVParallelLinears
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
-        # stacked_params_mapping = [
-        #     (".q_proj.W_A", ".q_proj.base_layer", "W"),
-        #     (".q_proj.W_A", ".q_proj.lora_A", "A"),
-        #     (".q_proj.B", ".q_proj.lora_B", "B"),
-        #     (".k_proj.W_A", ".k_proj.base_layer", "W"),
-        #     (".k_proj.W_A", ".k_proj.lora_A", "A"),
-        #     (".k_proj.B", ".k_proj.lora_B", "B"),
-        #     (".v_proj.W_A", ".v_proj.base_layer", "W"),
-        #     (".v_proj.W_A", ".v_proj.lora_A", "A"),
-        #     (".v_proj.B", ".v_proj.lora_B", "B"),
-        #     (".o_proj.W_A", ".o_proj.base_layer", "W"),
-        #     (".o_proj.W_A", ".o_proj.lora_A", "A"),
-        #     (".o_proj.B", ".o_proj.lora_B", "B"),
-        #     (".gate_proj.W_A", ".gate_proj.base_layer", "W"),
-        #     (".gate_proj.W_A", ".gate_proj.lora_A", "A"),
-        #     (".gate_proj.B", ".gate_proj.lora_B", "B"),
-        #     (".up_proj.W_A", ".up_proj.base_layer", "W"),
-        #     (".up_proj.W_A", ".up_proj.lora_A", "A"),
-        #     (".up_proj.B", ".up_proj.lora_B", "B"),
-        #     (".down_proj.W_A", ".down_proj.base_layer", "W"),
-        #     (".down_proj.W_A", ".down_proj.lora_A", "A"),
-        #     (".down_proj.B", ".down_proj.lora_B", "B"),
-        # ]
         stacked_params_mapping = [
-            (".qkv_proj.W_A", ".q_proj.base_layer", "q_base"),
-            (".qkv_proj.W_A", ".q_proj.lora_A", "q_lora_A"),
-            (".qkv_proj.B", ".q_proj.lora_B", "q_lora_B"),
-            (".qkv_proj.W_A", ".k_proj.base_layer", "k_base"),
-            (".qkv_proj.W_A", ".k_proj.lora_A", "k_lora_A"),
-            (".qkv_proj.B", ".k_proj.lora_B", "k_lora_B"),
-            (".qkv_proj.W_A", ".v_proj.base_layer", "v_base"),
-            (".qkv_proj.W_A", ".v_proj.lora_A", "v_lora_A"),
-            (".qkv_proj.B", ".v_proj.lora_B", "v_lora_B"),
+            (".q_proj.W_A", ".q_proj.base_layer", "W"),
+            (".q_proj.W_A", ".q_proj.lora_A", "A"),
+            (".q_proj.B", ".q_proj.lora_B", "B"),
+            (".k_proj.W_A", ".k_proj.base_layer", "W"),
+            (".k_proj.W_A", ".k_proj.lora_A", "A"),
+            (".k_proj.B", ".k_proj.lora_B", "B"),
+            (".v_proj.W_A", ".v_proj.base_layer", "W"),
+            (".v_proj.W_A", ".v_proj.lora_A", "A"),
+            (".v_proj.B", ".v_proj.lora_B", "B"),
             (".o_proj.W_A", ".o_proj.base_layer", "W"),
             (".o_proj.W_A", ".o_proj.lora_A", "A"),
             (".o_proj.B", ".o_proj.lora_B", "B"),
-            (".gate_up_proj.W_A", ".gate_proj.base_layer", "gate_base"),
-            (".gate_up_proj.W_A", ".gate_proj.lora_A", "gate_lora_A"),
-            (".gate_up_proj.B", ".gate_proj.lora_B", "gate_lora_B"),
-            (".gate_up_proj.W_A", ".up_proj.base_layer", "up_base"),
-            (".gate_up_proj.W_A", ".up_proj.lora_A", "up_lora_A"),
-            (".gate_up_proj.B", ".up_proj.lora_B", "up_lora_B"),
+            (".gate_proj.W_A", ".gate_proj.base_layer", "W"),
+            (".gate_proj.W_A", ".gate_proj.lora_A", "A"),
+            (".gate_proj.B", ".gate_proj.lora_B", "B"),
+            (".up_proj.W_A", ".up_proj.base_layer", "W"),
+            (".up_proj.W_A", ".up_proj.lora_A", "A"),
+            (".up_proj.B", ".up_proj.lora_B", "B"),
             (".down_proj.W_A", ".down_proj.base_layer", "W"),
             (".down_proj.W_A", ".down_proj.lora_A", "A"),
             (".down_proj.B", ".down_proj.lora_B", "B"),
         ]
+        # stacked_params_mapping = [
+        #     (".qkv_proj.W_A", ".q_proj.base_layer", "q_base"),
+        #     (".qkv_proj.W_A", ".q_proj.lora_A", "q_lora_A"),
+        #     (".qkv_proj.B", ".q_proj.lora_B", "q_lora_B"),
+        #     (".qkv_proj.W_A", ".k_proj.base_layer", "k_base"),
+        #     (".qkv_proj.W_A", ".k_proj.lora_A", "k_lora_A"),
+        #     (".qkv_proj.B", ".k_proj.lora_B", "k_lora_B"),
+        #     (".qkv_proj.W_A", ".v_proj.base_layer", "v_base"),
+        #     (".qkv_proj.W_A", ".v_proj.lora_A", "v_lora_A"),
+        #     (".qkv_proj.B", ".v_proj.lora_B", "v_lora_B"),
+        #     (".o_proj.W_A", ".o_proj.base_layer", "W"),
+        #     (".o_proj.W_A", ".o_proj.lora_A", "A"),
+        #     (".o_proj.B", ".o_proj.lora_B", "B"),
+        #     (".gate_up_proj.W_A", ".gate_proj.base_layer", "gate_base"),
+        #     (".gate_up_proj.W_A", ".gate_proj.lora_A", "gate_lora_A"),
+        #     (".gate_up_proj.B", ".gate_proj.lora_B", "gate_lora_B"),
+        #     (".gate_up_proj.W_A", ".up_proj.base_layer", "up_base"),
+        #     (".gate_up_proj.W_A", ".up_proj.lora_A", "up_lora_A"),
+        #     (".gate_up_proj.B", ".up_proj.lora_B", "up_lora_B"),
+        #     (".down_proj.W_A", ".down_proj.base_layer", "W"),
+        #     (".down_proj.W_A", ".down_proj.lora_A", "A"),
+        #     (".down_proj.B", ".down_proj.lora_B", "B"),
+        # ]
 
         params_dict = dict(self.named_parameters())
         # print(params_dict.keys())
@@ -658,8 +667,6 @@ class LlamaForCausalLMLoRA(nn.Module):
         return self.model.embed_tokens.weight, self.lm_head.weight
 
     def set_embed_and_head(self, embed, head):
-        print(self.lm_head.weight)
-        print(head)
         print("Mean(abs(lm_head.weight)):", self.lm_head.weight.abs().mean())
         print("Mean(abs(head)):", head.abs().mean())
 
