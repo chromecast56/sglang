@@ -152,6 +152,9 @@ class PhoenixWorker(TpModelWorker):
             # Forward with the target model and get hidden states.
             # We need the full hidden states to prefill the KV cache of the draft model.
             model_worker_batch = batch.get_model_worker_batch()
+            # print("FORWARD MODE: ", model_worker_batch.forward_mode)
+            # WTF ? Why is the forward mode EXTEND and not PREFILL ?
+
             model_worker_batch.capture_hidden_mode = CaptureHiddenMode.FULL
             logits_output, next_token_ids = self.target_worker.forward_batch_generation(
                 model_worker_batch
@@ -190,10 +193,19 @@ class PhoenixWorker(TpModelWorker):
             num_tokens = spec_info.draft_token_num
             batch.spec_info.draft_token_num = num_tokens//2
 
+            torch.set_printoptions(sci_mode=False)
+
+            # print("logits output 1: ", logits_output.next_token_logits[:num_tokens//2, 0])
+            # print("logits output 2: ", logits_output.next_token_logits[num_tokens//2:, 0])
+
+            # print("hidden states 1: ", logits_output.hidden_states[:num_tokens//2, 0])
+            # print("hidden states 2: ", logits_output.hidden_states[num_tokens//2:, 0])
+
             logits_output.hidden_states = logits_output.hidden_states[num_tokens//2:]
             logits_output.next_token_logits = logits_output.next_token_logits[:num_tokens//2]
 
-            # logits_output.hidden_states = logits_output.hidden_states[num_tokens//2:]
+
+            # logits_output.hidden_states = logits_output.hidden_states[:num_tokens//2]
             # logits_output.next_token_logits = logits_output.next_token_logits[num_tokens//2:]
             
         res = spec_info.verify(batch, logits_output)

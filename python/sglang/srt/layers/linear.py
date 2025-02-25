@@ -335,6 +335,8 @@ def matmul(X, W_lora_A, lora_B):
     lora_B: [N, r]
     return: [M, N]
     """
+
+    # print("GOT HERE")
     return X @ W_lora_A.T[:, :lora_B.shape[0]].contiguous()
 
 # for decode
@@ -346,14 +348,16 @@ def fast_lora(X, W_lora_A, lora_B):
     return: [M, N]
     """
 
-    # # NOTE: no merge testing
-    # W, A = W_lora_A[:-lora_B.shape[1]], W_lora_A[-lora_B.shape[1]:]
+    # NOTE: no merge testing
+    W, A = W_lora_A[:-lora_B.shape[1]], W_lora_A[-lora_B.shape[1]:]
 
-    # y = X @ W.T
+    y = X @ W.T
 
-    # y[y.shape[0]//2:] += (X[y.shape[0]//2:] @ A.T) @ lora_B.T
+    y[y.shape[0]//2:] += (X[y.shape[0]//2:] @ A.T) @ lora_B.T
+    # y[:y.shape[0]//2] += (X[:y.shape[0]//2] @ A.T) @ lora_B.T
 
-    # return y
+
+    return y
     
     # NOTE: No-op testing
     # return X @ W_lora_A.T[:, :lora_B.shape[0]].contiguous()
@@ -402,13 +406,14 @@ class LoRALinear(LinearBase):
         
         # B_proj remains a separate parameter.
         self.B = Linear(self.lora_rank, self.output_size, bias=False, dtype=self.params_dtype)
+        self.B.weight.data = torch.zeros_like(self.B.weight.data)
 
         set_weight_attrs(self.W_A.weight, {"weight_loader": self.weight_loader})
         set_weight_attrs(self.B.weight, {"weight_loader": self.weight_loader})
         
  
     def forward(self, input_, forward_batch):
-        if forward_batch.forward_mode.is_cuda_graph(): # is_decode, is_target_verify, is_idle
+        if forward_batch.forward_mode.is_target_verify():
             return fast_lora(input_, self.W_A.weight.data, self.B.weight.data)
         else:
             return matmul(input_, self.W_A.weight.data, self.B.weight.data)
@@ -485,7 +490,6 @@ class LoRAGateUpLinear(LoRALinear):
         #     torch.empty(2 * intermediate_size, 2 * lora_rank, dtype=self.params_dtype)
         # )
 
-        self.B.weight.data = torch.zeros_like(self.B.weight.data)
 
     def weight_loader(
         self,
@@ -574,8 +578,6 @@ class LoRAQKVLinear(LoRALinear):
 
         self.query_size = total_num_heads * head_dim
         self.keyvalue_size = total_num_kv_heads * head_dim
-
-        self.B.weight.data = torch.zeros_like(self.B.weight.data)
 
     def weight_loader(
         self,
