@@ -341,10 +341,19 @@ def matmul(X, W_lora_A, lora_B):
 def fast_lora(X, W_lora_A, lora_B):
     """
     X: [M, K]
-    W_lora_A: [r, K]
+    W_lora_A: [N+r, K]
     lora_B: [N, r]
     return: [M, N]
     """
+
+    # # NOTE: no merge testing
+    # W, A = W_lora_A[:-lora_B.shape[1]], W_lora_A[-lora_B.shape[1]:]
+
+    # y = X @ W.T
+
+    # y[y.shape[0]//2:] += (X[y.shape[0]//2:] @ A.T) @ lora_B.T
+
+    # return y
     
     # NOTE: No-op testing
     # return X @ W_lora_A.T[:, :lora_B.shape[0]].contiguous()
@@ -399,7 +408,7 @@ class LoRALinear(LinearBase):
         
  
     def forward(self, input_, forward_batch):
-        if forward_batch.forward_mode.is_decode():
+        if forward_batch.forward_mode.is_cuda_graph(): # is_decode, is_target_verify, is_idle
             return fast_lora(input_, self.W_A.weight.data, self.B.weight.data)
         else:
             return matmul(input_, self.W_A.weight.data, self.B.weight.data)
