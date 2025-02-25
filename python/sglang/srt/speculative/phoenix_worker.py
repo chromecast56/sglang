@@ -188,21 +188,29 @@ class PhoenixWorker(TpModelWorker):
         logits_output, _ = self.target_worker.forward_batch_generation(
             model_worker_batch, skip_sample=True
         )
-        spec_info.hidden_states = logits_output.hidden_states
-
 
         if batch.spec_info.is_lora:
             num_tokens = spec_info.draft_token_num
-            # print(f"Draft token before: {batch.spec_info.draft_token}")
-            batch.spec_info.draft_token = batch.spec_info.draft_token[:num_tokens//2]
             batch.spec_info.draft_token_num = num_tokens//2
-            batch.spec_info.hidden_states = batch.spec_info.hidden_states[num_tokens//2:]
-            # print(f"Draft token after: {batch.spec_info.draft_token}")
 
-            # print(f"logits before: {logits_output.next_token_logits[:, 0]}")
+            logits_output.hidden_states = logits_output.hidden_states[num_tokens//2:]
             logits_output.next_token_logits = logits_output.next_token_logits[:num_tokens//2]
+
+
+
+        spec_info.hidden_states = logits_output.hidden_states
+
+
+        # if batch.spec_info.is_lora:
+        #     num_tokens = spec_info.draft_token_num
+        #     # batch.spec_info.draft_token = batch.spec_info.draft_token[:num_tokens//2]
+        #     batch.spec_info.draft_token_num = num_tokens//2
+
+        #     batch.spec_info.hidden_states = batch.spec_info.hidden_states[num_tokens//2:]
+        #     print(logits_output.hidden_states.shape)
+
+        #     logits_output.next_token_logits = logits_output.next_token_logits[:num_tokens//2]
             
-            # print(f"logits after: {logits_output.next_token_logits[:, 0]}")
         res = spec_info.verify(batch, logits_output)
         batch.forward_mode = ForwardMode.DECODE
         return res + (model_worker_batch,)
