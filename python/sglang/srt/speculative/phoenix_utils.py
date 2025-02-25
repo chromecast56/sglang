@@ -199,7 +199,7 @@ def grow_mask(C: torch.Tensor, num_verify_tokens: int) -> torch.Tensor:
     bottom = torch.cat([A, zeros, B], dim=-1)
     out = torch.cat([top, bottom], dim=0)
     
-    return out.flatten()# .view(-1, out.size(-1))
+    return out.flatten()# .contiguous()# .view(-1, out.size(-1))
 
 
 @dataclasses.dataclass
@@ -236,15 +236,15 @@ class PhoenixVerifyInput:
             num_verify_tokens = num_verify_tokens // 2
 
         # double num verify tokens, and extend the tree mask
-        def post_init(tree_mask, position, draft_tokens, num_verify_tokens):
+        def post_init(tree_mask, positions, draft_tokens, num_verify_tokens):
             if not is_lora:
-                return tree_mask, position, draft_tokens, num_verify_tokens
+                return tree_mask, positions, draft_tokens, num_verify_tokens
         
-            position = position.repeat(2)
+            positions = positions.repeat(2)
             draft_tokens = draft_tokens.repeat(2)
         
             tree_mask = grow_mask(tree_mask, num_verify_tokens)
-            return tree_mask, position, draft_tokens, 2 * num_verify_tokens
+            return tree_mask, positions, draft_tokens, 2 * num_verify_tokens
         
         if is_all_greedy:
             # print(f"verified_id: {verified_id.shape}")
@@ -257,7 +257,7 @@ class PhoenixVerifyInput:
             # print(f"spec_steps: {spec_steps}")
             # print(f"num_verify_tokens: {num_verify_tokens}")
             
-            tree_mask, position, retrive_index, retrive_cum_len, draft_tokens = (                
+            tree_mask, positions, retrive_index, retrive_cum_len, draft_tokens = (                
                 build_tree_kernel(
                     verified_id,
                     score_list,  # b, n, topk; n= 1 + (num_steps-1) * self.topk
@@ -270,6 +270,8 @@ class PhoenixVerifyInput:
                     num_verify_tokens,
                 )
             )
+
+            # print("draft_tokens: ", draft_tokens)
 
             # print("draft_tokens: ", draft_tokens.shape) # [bsz*num_tokens]
             # print("tree_mask: ", tree_mask.shape) # [bsz*(seq_len*num_tokens + num_tokens*num_tokens)]
@@ -297,15 +299,13 @@ class PhoenixVerifyInput:
             # print("retrive_index: ", retrive_index)
             # print("retrive_cum_len: ", retrive_cum_len)
 
-            tree_mask, position, draft_tokens, num_verify_tokens = post_init(tree_mask, position, draft_tokens, num_verify_tokens)
-
-            # print(f"{tree_mask.int().view(16, -1)}")
+            tree_mask, positions, draft_tokens, num_verify_tokens = post_init(tree_mask, positions, draft_tokens, num_verify_tokens)
 
             return cls(
                 draft_tokens,
                 tree_mask,
-                position,
-                retrive_index,
+                positions,
+                retrive_index, # basically, the "structure" of the tree
                 None,
                 None,
                 retrive_cum_len,
@@ -317,7 +317,7 @@ class PhoenixVerifyInput:
         else:
             (
                 tree_mask,
-                position,
+                positions,
                 retrive_index,
                 retrive_next_token,
                 retrive_next_sibling,
@@ -335,12 +335,12 @@ class PhoenixVerifyInput:
             )
 
             
-            tree_mask, position, draft_tokens, num_verify_tokens = post_init(tree_mask, position, draft_tokens, num_verify_tokens)
+            tree_mask, positions, draft_tokens, num_verify_tokens = post_init(tree_mask, positions, draft_tokens, num_verify_tokens)
 
             return cls(
                 draft_tokens,
                 tree_mask,
-                position,
+                positions,
                 retrive_index,
                 retrive_next_token,
                 retrive_next_sibling,
@@ -352,16 +352,11 @@ class PhoenixVerifyInput:
             )
 
     def prepare_for_verify(self, batch: ScheduleBatch):
+        batch.spec_info.capture_hidden_mode = CaptureHiddenMode.FULL
         batch.input_ids = self.draft_token
         batch.out_cache_loc = batch.alloc_token_slots(batch.input_ids.numel()) # allocates n tokens
         bs = batch.batch_size()
 
-        # print("req_pool_indices: ", batch.req_pool_indices)
-        # print("req_to_token_pool.req_to_token: ", batch.req_to_token_pool.req_to_token.shape)
-        # print("seq_lens: ", batch.seq_lens)
-        # print("seq_lens + self.draft_token_num: ", batch.seq_lens + self.draft_token_num)
-        # print("out_cache_loc: ", batch.out_cache_loc)
-        # print("bs: ", bs)
         assign_req_to_token_pool[(bs,)](
             batch.req_pool_indices,
             batch.req_to_token_pool.req_to_token,
@@ -408,14 +403,10 @@ class PhoenixVerifyInput:
         return kv_indices, cum_kv_seq_len, qo_indptr, self.custom_mask
 
     def verify(self, batch: ScheduleBatch, logits_output: torch.Tensor) -> torch.Tensor:
-        draft_token = torch.cat(                                                           # NOTE: on original tokens
+        draft_token = torch.cat(
             [self.draft_token, torch.full([1], -1, dtype=torch.int32, device="cuda")],
             dim=-1,
         )
-
-        # print("draft_token:", draft_token.shape)
-        # print("self.retrive_index:", self.retrive_index.shape)
-        # print(self.retrive_index)
 
         candidates = draft_token[self.retrive_index]
         if batch.sampling_info.is_all_greedy:
@@ -425,11 +416,6 @@ class PhoenixVerifyInput:
             predict = torch.cat(
                 [predict, torch.full([1], -1, dtype=torch.int32, device="cuda")], dim=-1
             )
-
-            # print("predict:", predict.shape)
-
-            # print("self.retrive_index:", self.retrive_index)
-            # print("self.retrive_index.shape:", self.retrive_index.shape)
 
             target_predict = predict[self.retrive_index]
             # logits = logits_output.next_token_logits[self.retrive_index]
@@ -522,12 +508,7 @@ class PhoenixVerifyInput:
         verified_id = predict[accept_index]
 
 
-        if batch.spec_info.is_lora:
-            evict_mask = torch.full_like(torch.cat([self.draft_token, self.draft_token]), True, dtype=torch.bool) # NOTE: also evict aux tokens
-        else:
-            evict_mask = torch.full_like(self.draft_token, True, dtype=torch.bool)
-        
-        
+        evict_mask = torch.full_like(self.draft_token, True, dtype=torch.bool)
         
         evict_mask[accept_index] = False
         mem_need_free_idx = batch.out_cache_loc[evict_mask]
@@ -553,8 +534,9 @@ class PhoenixVerifyInput:
 
             print("accept_index: ", accept_index)
 
-
-            draft_input.hidden_states = batch.spec_info.hidden_states[new_accept_index]
+            print("new_accept_index: ", new_accept_index)
+            draft_input.hidden_states = logits_output.hidden_states[new_accept_index]
+            draft_input.next_token_logits = logits_output.next_token_logits[new_accept_index]
 
             draft_input.verified_id = predict[new_accept_index]
             draft_input.accept_length = accept_length[unfinished_index]
@@ -570,7 +552,17 @@ class PhoenixVerifyInput:
                 draft_input.seq_lens_for_draft_extend = batch.seq_lens
                 draft_input.req_pool_indices_for_draft_extend = batch.req_pool_indices
 
+
+        # draft_input.hidden_states = logits_output.hidden_states[accept_index]
+        # draft_input.next_token_logits = logits_output.next_token_logits[accept_index]
+
+        # print("draft_input.hidden_states: ", draft_input.hidden_states.shape)
+        # print("draft_input.next_token_logits: ", draft_input.next_token_logits.shape)
+
         logits_output.next_token_logits = logits_output.next_token_logits[accept_index]
+        logits_output.hidden_states = logits_output.hidden_states[accept_index]
+        # print("logits_output.next_token_logits: ", logits_output.next_token_logits.shape)
+        # print("logits_output.hidden_states: ", logits_output.hidden_states.shape)
         return (
             draft_input,
             logits_output,

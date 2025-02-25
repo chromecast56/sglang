@@ -10,6 +10,39 @@ wget -O question.jsonl https://raw.githubusercontent.com/lm-sys/FastChat/main/fa
 ```
 
 
+Final:
+python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --speculative-num-steps 5 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 128 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16 \
+    --speculative-phoenix-is-lora
+
+python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --speculative-num-steps 5 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 128 \
+    --disable-cuda-graph --mem-fraction 0.7 --dtype bfloat16 \
+    --speculative-phoenix-is-lora
+
+
+
+python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 5 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 128 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16 \
+    --speculative-phoenix-is-lora
+
+
+Linear no op:
+python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 5 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 128 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16 \
+    --speculative-phoenix-is-lora
+
+
+
+
+
 python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3.1-8B-Instruct  --speculative-algo PHOENIX \
     --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 5 \
     --speculative-eagle-topk 8 --speculative-num-draft-tokens 64 \
@@ -31,11 +64,19 @@ python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lor
     --speculative-phoenix-is-lora
 
 
+Test 1:
 python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
     --speculative-draft /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --speculative-num-steps 5 \
     --speculative-eagle-topk 8 --speculative-num-draft-tokens 128 \
     --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16 \
     --speculative-phoenix-is-lora
+
+Test 2:
+python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3.1-8B-Instruct  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 5 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 64 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16
+
 
 
 Phoenix:
@@ -57,7 +98,7 @@ python -m sglang.launch_server --model-path /data/jamesliu/sglang/phoenix_1layer
 
 python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
     --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 5 \
-    --speculative-eagle-topk 8 --speculative-num-draft-tokens 16 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 64 \
     --disable-cuda-graph --mem-fraction 0.7 --dtype bfloat16 \
     --speculative-phoenix-is-lora
 

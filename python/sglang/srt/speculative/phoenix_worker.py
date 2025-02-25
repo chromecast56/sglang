@@ -68,12 +68,9 @@ class PhoenixWorker(TpModelWorker):
             embed, head = self.target_worker.model_runner.model.get_embed_and_head()
             self.model_runner.model.set_embed_and_head(embed, head)
 
-        # NOTE: RESOLVE THIS!!!!!
         if self.speculative_algorithm.is_phoenix():
             head = self.target_worker.model_runner.model.get_head()
             self.model_runner.model.set_head(head)
-            # embed, head = self.target_worker.model_runner.model.get_embed_and_head()
-            # self.model_runner.model.set_embed_and_head(embed, head)
 
         self.model_runner.server_args.disable_cuda_graph = backup_disable_cuda_graph
 
@@ -119,7 +116,6 @@ class PhoenixWorker(TpModelWorker):
         logger.info(f"Capture cuda graph end. Time elapsed: {time.time() - tic:.2f} s")
 
     def forward_batch_speculative_generation(self, batch: ScheduleBatch):
-
         if batch.forward_mode.is_decode():
             # print("Starting decode")
             # print("Step 1: Draft")
@@ -143,7 +139,7 @@ class PhoenixWorker(TpModelWorker):
             # print("logits_output.hidden_states: ", logits_output.hidden_states.shape) # [bsz*num_tokens, hidden_size]
             # if it is None, means all requsets are finished
             if batch.spec_info.verified_id is not None:
-                self.forward_draft_extend_after_decode(batch, logits_output)
+                self.forward_draft_extend_after_decode(batch)
             return (
                 logits_output,
                 verified_id,
@@ -168,6 +164,7 @@ class PhoenixWorker(TpModelWorker):
             # TODO: the "one extra pass" logic. Currently, first acc length will always be bad.
 
             # TODO: Here, we will rerun the forward of the target for the very last token, with the lora branch (bsz 2).
+            # OR: we just tank the hit of the n draft passes, which is not relatively significant.
 
             # print("logits_output.hidden_states: ", logits_output.hidden_states.shape) # [seq_len, hidden_size]
             # Forward with the draft model.
@@ -196,20 +193,8 @@ class PhoenixWorker(TpModelWorker):
             logits_output.hidden_states = logits_output.hidden_states[num_tokens//2:]
             logits_output.next_token_logits = logits_output.next_token_logits[:num_tokens//2]
 
-
-
-        spec_info.hidden_states = logits_output.hidden_states
-
-
-        # if batch.spec_info.is_lora:
-        #     num_tokens = spec_info.draft_token_num
-        #     # batch.spec_info.draft_token = batch.spec_info.draft_token[:num_tokens//2]
-        #     batch.spec_info.draft_token_num = num_tokens//2
-
-        #     batch.spec_info.hidden_states = batch.spec_info.hidden_states[num_tokens//2:]
-        #     print(logits_output.hidden_states.shape)
-
-        #     logits_output.next_token_logits = logits_output.next_token_logits[:num_tokens//2]
+            # logits_output.hidden_states = logits_output.hidden_states[num_tokens//2:]
+            # logits_output.next_token_logits = logits_output.next_token_logits[num_tokens//2:]
             
         res = spec_info.verify(batch, logits_output)
         batch.forward_mode = ForwardMode.DECODE
@@ -244,9 +229,11 @@ class PhoenixWorker(TpModelWorker):
         # print(f"batch.out_cache_loc: {batch.out_cache_loc.shape}")            # [seq_len * topk * spec_steps]
         batch.seq_lens_sum = torch.sum(batch.seq_lens).item()
         spec_info.positions = batch.seq_lens.repeat_interleave(self.topk, dim=0)
-        # print(f"spec_info.positions: {spec_info.positions.shape}") # [topk]
         # Get forward batch
-        spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
+        # spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
+        spec_info.capture_hidden_mode = CaptureHiddenMode.NULL
+
+
         model_worker_batch = batch.get_model_worker_batch()
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
         can_cuda_graph = self.cuda_graph_runner and self.cuda_graph_runner.can_run(
@@ -375,7 +362,7 @@ class PhoenixWorker(TpModelWorker):
         batch.token_to_kv_pool = runner.token_to_kv_pool
         batch.req_to_token_pool = runner.req_to_token_pool
 
-    def forward_draft_extend_after_decode(self, batch: ScheduleBatch, logits_output: LogitsProcessorOutput):
+    def forward_draft_extend_after_decode(self, batch: ScheduleBatch):
         seq_lens_backup = batch.seq_lens
         req_pool_indices_backup = batch.req_pool_indices
 
@@ -384,19 +371,16 @@ class PhoenixWorker(TpModelWorker):
 
         batch.spec_info.prepare_extend_after_decode(batch, self.speculative_num_steps)
 
-        batch.spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
-        # batch.spec_info.capture_hidden_mode = CaptureHiddenMode.NULL
+        batch.spec_info.capture_hidden_mode = CaptureHiddenMode.NULL
         model_worker_batch = batch.get_model_worker_batch()
 
-
-        # BUG: Phoenix does not use hidden state sampled from draft model. Instead of [h0, h1', h1', h1'], it uses [h0, h0, h0, h0].
-        # For some reason, doing the former works better?? Look into this later.
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner) 
-        new_logits_output = self.model_runner.forward(forward_batch)            # does the KV refresh for draft model
+        logits_output = self.model_runner.forward(forward_batch)            # does the KV refresh for draft model
 
+        logits_output.hidden_states = batch.spec_info.hidden_states[-1:] # NOTE: uncomment for EAGLE like behavior
 
-        new_logits_output.hidden_states = logits_output.hidden_states[batch.spec_info.accept_length-1] # NOTE: uncomment for EAGLE like behavior
-        self.capture_for_decode(new_logits_output, forward_batch)
+        # print("new_logits_output.hidden_states: ", new_logits_output.hidden_states.shape)
+        self.capture_for_decode(logits_output, forward_batch)
         self._set_mem_pool(batch, self.target_worker.model_runner)
 
         # Restore backup.

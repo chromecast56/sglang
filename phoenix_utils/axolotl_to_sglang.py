@@ -14,6 +14,11 @@ For LoRA:
          --base_model_dir /data/jamesliu/sglang/phoenix_1layer_lora/base_model \
          --phoenix_model_dir /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --phoenix_num_layers 1 --lora_rank 64
 
+python axolotl_to_sglang.py \
+         --merged_model_dir /data/franklin/checkpoints/phoenix/phoenix-pretrain-2layer-5epochs-lora-target/checkpoint-93225 \
+         --base_model_dir /data/jamesliu/sglang/phoenix_2layer_lora/base_model \
+         --phoenix_model_dir /data/jamesliu/sglang/phoenix_2layer_lora/phoenix_model --phoenix_num_layers 2 --lora_rank 64
+
          
 For example, if you trained togethercomputer/phoenix-1layer-baseline, point
 --merged_model_dir to the checkpoint (e.g. checkpoint-93225).

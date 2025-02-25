@@ -74,7 +74,7 @@ class LlamaModel(nn.Module):
             ]
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.fc = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
+        self.fc = torch.nn.Linear(config.hidden_size * 2, config.hidden_size, bias=True)
 
     def forward(
         self,
@@ -88,8 +88,9 @@ class LlamaModel(nn.Module):
         else:
             hidden_states = input_embeds
 
+
         hidden_states = self.fc(
-            torch.cat((hidden_states, forward_batch.spec_info.hidden_states), dim=-1)
+            torch.cat([hidden_states, forward_batch.spec_info.hidden_states], dim=-1)
         )
 
         residual = None

@@ -68,28 +68,24 @@ class LlamaMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        # self.gate_up_proj = MergedColumnParallelLinear(
-        #     hidden_size,
-        #     [intermediate_size] * 2,
-        #     bias=False,
-        #     quant_config=quant_config,
-        #     prefix=f"{prefix}.gate_up_proj",
+        # self.gate_proj = LoRALinear(
+        #     input_size=hidden_size,
+        #     output_size=intermediate_size,
+        #     prefix=f"{prefix}.gate_proj",
+        #     lora_rank=config.lora_rank,
         # )
-
+        # self.up_proj = LoRALinear(
+        #     input_size=hidden_size,
+        #     output_size=intermediate_size,
+        #     prefix=f"{prefix}.up_proj",
+        #     lora_rank=config.lora_rank,
+        # )
         self.gate_up_proj = LoRAGateUpLinear(
             input_size=hidden_size,
             intermediate_size=intermediate_size,
             prefix=f"{prefix}.gate_up_proj",
             lora_rank=config.lora_rank,
         )
-
-        # self.down_proj = RowParallelLinear(
-        #     intermediate_size,
-        #     hidden_size,
-        #     bias=False,
-        #     quant_config=quant_config,
-        #     prefix=f"{prefix}.down_proj",
-        # )
         self.down_proj = LoRALinear(
             input_size=intermediate_size,
             output_size=hidden_size,
@@ -104,10 +100,9 @@ class LlamaMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x, forward_batch):
-        # gate_up, _ = self.gate_up_proj(x)
         gate_up = self.gate_up_proj(x, forward_batch)
+        # gate_up = torch.cat([self.gate_proj(x, forward_batch), self.up_proj(x, forward_batch)], dim=-1)
         x = self.act_fn(gate_up)
-        # x, _ = self.down_proj(x)
 
         x = self.down_proj(x, forward_batch)
         return x
@@ -155,16 +150,26 @@ class LlamaAttention(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
-        # self.qkv_proj = QKVParallelLinear(
-        #     hidden_size,
-        #     self.head_dim,
-        #     self.total_num_heads,
-        #     self.total_num_kv_heads,
-        #     bias=bias,
-        #     quant_config=quant_config,
-        #     prefix=f"{prefix}.qkv_proj",
-        # )
 
+        # self.q_proj = LoRALinear(
+        #     input_size=hidden_size,
+        #     output_size=self.total_num_heads * self.head_dim,
+        #     prefix=f"{prefix}.q_proj",
+        #     lora_rank=config.lora_rank,
+        # )
+        # self.k_proj = LoRALinear(
+        #     input_size=hidden_size,
+        #     output_size=self.total_num_kv_heads * self.head_dim,
+        #     prefix=f"{prefix}.k_proj",
+        #     lora_rank=config.lora_rank,
+        # )
+        # self.v_proj = LoRALinear(
+        #     input_size=hidden_size,
+        #     output_size=self.total_num_kv_heads * self.head_dim,
+        #     prefix=f"{prefix}.v_proj",
+        #     lora_rank=config.lora_rank,
+        # )
+        
         self.qkv_proj = LoRAQKVLinear(
             input_size=hidden_size,
             head_dim=self.head_dim,
@@ -173,13 +178,6 @@ class LlamaAttention(nn.Module):
             prefix=f"{prefix}.qkv_proj",
             lora_rank=config.lora_rank,
         )
-        # self.o_proj = RowParallelLinear(
-        #     self.total_num_heads * self.head_dim,
-        #     hidden_size,
-        #     bias=bias,
-        #     quant_config=quant_config,
-        #     prefix=f"{prefix}.o_proj",
-        # )
         self.o_proj = LoRALinear(
             input_size=self.total_num_heads * self.head_dim,
             output_size=hidden_size,
@@ -209,9 +207,11 @@ class LlamaAttention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        # qkv, _ = self.qkv_proj(hidden_states)
         qkv = self.qkv_proj(hidden_states, forward_batch)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        # q = self.q_proj(hidden_states, forward_batch)
+        # k = self.k_proj(hidden_states, forward_batch)
+        # v = self.v_proj(hidden_states, forward_batch)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, forward_batch)
         # output, _ = self.o_proj(attn_output)
@@ -328,6 +328,7 @@ class LlamaModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor = None,
     ) -> torch.Tensor:
+        # print("positions: ", positions)
         if input_embeds is None:
             hidden_states = self.embed_tokens(input_ids)
         else:
@@ -477,13 +478,30 @@ class LlamaForCausalLMLoRA(nn.Module):
 
     # NOTE: To extend to TP, need to make MergedColumnParallelLinear and QKVParallelLinears
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+        # stacked_params_mapping = [
+        #     (".q_proj.W_A", ".q_proj.base_layer", "W"),
+        #     (".q_proj.W_A", ".q_proj.lora_A", "A"),
+        #     (".q_proj.B", ".q_proj.lora_B", "B"),
+        #     (".k_proj.W_A", ".k_proj.base_layer", "W"),
+        #     (".k_proj.W_A", ".k_proj.lora_A", "A"),
+        #     (".k_proj.B", ".k_proj.lora_B", "B"),
+        #     (".v_proj.W_A", ".v_proj.base_layer", "W"),
+        #     (".v_proj.W_A", ".v_proj.lora_A", "A"),
+        #     (".v_proj.B", ".v_proj.lora_B", "B"),
+        #     (".o_proj.W_A", ".o_proj.base_layer", "W"),
+        #     (".o_proj.W_A", ".o_proj.lora_A", "A"),
+        #     (".o_proj.B", ".o_proj.lora_B", "B"),
+        #     (".gate_proj.W_A", ".gate_proj.base_layer", "W"),
+        #     (".gate_proj.W_A", ".gate_proj.lora_A", "A"),
+        #     (".gate_proj.B", ".gate_proj.lora_B", "B"),
+        #     (".up_proj.W_A", ".up_proj.base_layer", "W"),
+        #     (".up_proj.W_A", ".up_proj.lora_A", "A"),
+        #     (".up_proj.B", ".up_proj.lora_B", "B"),
+        #     (".down_proj.W_A", ".down_proj.base_layer", "W"),
+        #     (".down_proj.W_A", ".down_proj.lora_A", "A"),
+        #     (".down_proj.B", ".down_proj.lora_B", "B"),
+        # ]
         stacked_params_mapping = [
-            # (param_name, shard_name, shard_id)
-            # (".qkv_proj", ".q_proj", "q"),
-            # (".qkv_proj", ".k_proj", "k"),
-            # (".qkv_proj", ".v_proj", "v"),
-            # (".gate_up_proj", ".gate_proj", 0),
-            # (".gate_up_proj", ".up_proj", 1),
             (".qkv_proj.W_A", ".q_proj.base_layer", "q_base"),
             (".qkv_proj.W_A", ".q_proj.lora_A", "q_lora_A"),
             (".qkv_proj.B", ".q_proj.lora_B", "q_lora_B"),
