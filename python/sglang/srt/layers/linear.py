@@ -336,8 +336,9 @@ def base_only(X, W_lora_A, lora_B):
     return: [M, N]
     """
 
-    # print("GOT HERE")
-    return X @ W_lora_A.T[:, :lora_B.shape[0]].contiguous()
+    # print("base only")
+    W = W_lora_A[:-lora_B.shape[1]]
+    return X @ W.T
 
 def lora_only(X, W_lora_A, lora_B):
     """
@@ -347,6 +348,7 @@ def lora_only(X, W_lora_A, lora_B):
     return: [M, N]
     """
 
+    # print("lora only")
     y = X @ W_lora_A.T # [M, N + r]
 
     return y[:, :lora_B.shape[0]] + y[:, lora_B.shape[0]:] @ lora_B.T
@@ -359,7 +361,7 @@ def base_and_lora(X, W_lora_A, lora_B):
     lora_B: [N, r]
     return: [M, N]
     """
-
+    # print("base and lora")
     # NOTE: no merge testing
     # W, A = W_lora_A[:-lora_B.shape[1]], W_lora_A[-lora_B.shape[1]:]
 
@@ -425,18 +427,13 @@ class LoRALinear(LinearBase):
         
  
     def forward(self, input_, forward_batch):
+        # return base_only(input_, self.W_A.weight.data, self.B.weight.data)
         if forward_batch.forward_mode.is_target_verify():
             return base_and_lora(input_, self.W_A.weight.data, self.B.weight.data)
         elif forward_batch.forward_mode.is_nolora():
             return base_only(input_, self.W_A.weight.data, self.B.weight.data)
         elif forward_batch.forward_mode.is_lora():
             return lora_only(input_, self.W_A.weight.data, self.B.weight.data)
- 
-
-        # if forward_batch.forward_mode.is_target_verify():
-        #     return fast_lora(input_, self.W_A.weight.data, self.B.weight.data)
-        # else:
-        #     return matmul(input_, self.W_A.weight.data, self.B.weight.data)
     
     def weight_loader(
         self,
