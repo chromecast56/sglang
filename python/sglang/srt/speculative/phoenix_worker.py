@@ -152,6 +152,8 @@ class PhoenixWorker(TpModelWorker):
                 # WTF ? Why is the forward mode EXTEND and not PREFILL ?
                 # NOTE: its because PREFILL is depreciated.
 
+
+                # NOTE: Double prefill is a temp fix. Is incompatible (slow) with RadixAttention.
                 model_worker_batch_temp.capture_hidden_mode = CaptureHiddenMode.FULL
                 model_worker_batch_temp.forward_mode = ForwardMode.EXTEND_LORA
                 # model_worker_batch.forward_mode = ForwardMode.EXTEND_NOLORA
@@ -171,6 +173,7 @@ class PhoenixWorker(TpModelWorker):
                 logits_output, next_token_ids = self.target_worker.forward_batch_generation(
                     model_worker_batch
                 )
+
             else:
                 model_worker_batch = batch.get_model_worker_batch()
                 model_worker_batch.capture_hidden_mode = CaptureHiddenMode.FULL
@@ -202,7 +205,7 @@ class PhoenixWorker(TpModelWorker):
             num_tokens = spec_info.draft_token_num
             batch.spec_info.draft_token_num = num_tokens//2
 
-            torch.set_printoptions(sci_mode=False)
+            # torch.set_printoptions(sci_mode=False)
 
             # print("logits output 1: ", logits_output.next_token_logits[:num_tokens//2, 0])
             # print("logits output 2: ", logits_output.next_token_logits[num_tokens//2:, 0])
@@ -340,7 +343,6 @@ class PhoenixWorker(TpModelWorker):
             ]
             forward_batch.positions.add_(1) # advance the autoregression
             forward_batch.attn_backend = self.draft_attn_backend.attn_backends[i]
-            # spec_info.hidden_states = hidden_states                                 # NOTE: could be as simple as removing this line
  
             # Run forward
             logits_output = self.model_runner.model.forward(                          # Draft pass
@@ -348,18 +350,6 @@ class PhoenixWorker(TpModelWorker):
             )
             probs = torch.softmax(logits_output.next_token_logits, dim=-1)
             topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
-            # hidden_states = logits_output.hidden_states                             # NOTE: and this one
-
-            # if i <= 1:
-            #     print(f"Iteration {i}")
-            #     print(f"forward_batch.input_ids: {forward_batch.input_ids.shape}") # [bsz * topk]
-            #     print(f"forward_batch.positions: {forward_batch.positions.shape}") # [bsz * topk]
-            #     print(f"spec_info.hidden_states: {spec_info.hidden_states.shape}") # [bsz * topk, hidden_size]
-            #     print(f"forward_batch.spec_info.hidden_states: {forward_batch.spec_info.hidden_states.shape}") # [bsz * topk, hidden_size]
-            #     print(f"logits_output: {logits_output.next_token_logits.shape}") # [bsz * topk, vocab_size]
-            #     print(f"Score: tree_info[0]: {tree_info[0].shape}") # [bsz, topk, topk]
-            #     print(f"Token: tree_info[1]: {tree_info[1].shape}") # [bsz, topk**2]
-            #     print(f"Parents: tree_info[2]: {tree_info[2].shape}")  # [bsz, topk]
 
 
 

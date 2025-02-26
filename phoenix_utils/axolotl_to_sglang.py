@@ -124,6 +124,14 @@ def extract_state_dicts(merged_dir):
 
             print(key, new_key)
 
+            if "q_proj" in key and "lora" in key:
+                print("q_proj: ", value)
+            elif "k_proj" in key and "lora" in key:
+                print("k_proj: ", value)
+            elif "v_proj" in key and "lora" in key:
+                print("v_proj: ", value)
+                
+
         # nonlora
         elif key.startswith("model.model."):
             # Remove "model.model." so that it matches the expected keys in LlamaForCausalLM

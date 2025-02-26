@@ -9,6 +9,27 @@ wget -O question.jsonl https://raw.githubusercontent.com/lm-sys/FastChat/main/fa
 ### Benchmark sglang
 ```
 
+k=1 testing:
+
+
+python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3.1-8B-Instruct  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 8 \
+    --speculative-eagle-topk 1 --speculative-num-draft-tokens 8 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16
+
+python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --speculative-num-steps 8 \
+    --speculative-eagle-topk 1 --speculative-num-draft-tokens 16 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16 \
+    --speculative-phoenix-is-lora
+
+
+
+python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3.1-8B-Instruct  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 5 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 64 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16
+
 
 Final:
 python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
@@ -32,12 +53,8 @@ python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lor
     --speculative-phoenix-is-lora
 
 
-Linear no op:
-python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
-    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 5 \
-    --speculative-eagle-topk 8 --speculative-num-draft-tokens 128 \
-    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16 \
-    --speculative-phoenix-is-lora
+
+
 
 
 
@@ -214,7 +231,7 @@ python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3-8B-Instruct  --s
     --speculative-eagle-topk 8 --speculative-num-draft-tokens 1024 \
     --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16
 
-python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3-8B-Instruct  --speculative-algo EAGLE --speculative-draft lmzheng/sglang-EAGLE-LLaMA3-Instruct-8B --speculative-num-steps 5 --speculative-eagle-topk 8 --speculative-num-draft-tokens 64 --mem-fraction 0.7 --disable-radix --attention-backend triton --cuda-graph-max-bs 1 --dtype bfloat16
+python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3-8B-Instruct  --speculative-algo EAGLE --speculative-draft lmzheng/sglang-EAGLE-LLaMA3-Instruct-8B --speculative-num-steps 5 --speculative-eagle-topk 24 --speculative-num-draft-tokens 128 --mem-fraction 0.7 --cuda-graph-max-bs 1 --dtype bfloat16
 
 
 python3 -m sglang.launch_server --model meta-llama/Llama-2-7b-chat-hf  --speculative-algo EAGLE --speculative-draft lmzheng/sglang-EAGLE-llama2-chat-7B --speculative-num-steps 5 --speculative-eagle-topk 4 --speculative-num-draft-tokens 32 --mem-fraction 0.7 --cuda-graph-max-bs 1 --dtype float16

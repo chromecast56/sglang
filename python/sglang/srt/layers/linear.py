@@ -347,7 +347,7 @@ def lora_only(X, W_lora_A, lora_B):
     return: [M, N]
     """
 
-    y = X @ W_lora_A.T # [bsz, M, N + r]
+    y = X @ W_lora_A.T # [M, N + r]
 
     return y[:, :lora_B.shape[0]] + y[:, lora_B.shape[0]:] @ lora_B.T
 
@@ -374,7 +374,7 @@ def base_and_lora(X, W_lora_A, lora_B):
     # NOTE: No-op testing
     # return X @ W_lora_A.T[:, :lora_B.shape[0]].contiguous()
 
-    y = X @ W_lora_A.T # [bsz, M, N + r]
+    y = X @ W_lora_A.T # [M, N + r]
 
     y[:X.shape[0]//2, lora_B.shape[0]:] = 0 # zero out lora part for client 1
 

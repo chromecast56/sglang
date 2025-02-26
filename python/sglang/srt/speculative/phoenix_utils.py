@@ -408,6 +408,8 @@ class PhoenixVerifyInput:
             dim=-1,
         )
 
+        # print(torch.max(self.retrive_index))
+
         candidates = draft_token[self.retrive_index]
         if batch.sampling_info.is_all_greedy:
             # temp == 0
@@ -528,13 +530,10 @@ class PhoenixVerifyInput:
         if len(new_accept_index) > 0:
             new_accept_index = torch.tensor(new_accept_index, device="cuda")
 
-            # print(f"batch.spec_info.hidden_states: {batch.spec_info.hidden_states.shape}")
-            # print(f"new_accept_index: {new_accept_index.shape}")
-            # print(f"draft_token_num: {self.draft_token_num}")
-
             print("accept_index: ", accept_index)
+            # print("new_accept_index: ", new_accept_index)
 
-            print("new_accept_index: ", new_accept_index)
+
             draft_input.hidden_states = logits_output.hidden_states[new_accept_index]
             draft_input.next_token_logits = logits_output.next_token_logits[new_accept_index]
 
