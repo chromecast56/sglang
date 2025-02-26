@@ -41,7 +41,7 @@ def write_answers(filename, model_id, questions, answers):
 
 @sgl.function
 def answer_mt_bench(s, question_1, question_2):
-    s += sgl.system()
+    s += sgl.system("You are a helpful assistant.")
     s += sgl.user(question_1)
     s += sgl.assistant(sgl.gen("answer_1"))
     s += sgl.user(question_2)
