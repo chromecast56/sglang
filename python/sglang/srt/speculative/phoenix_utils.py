@@ -175,7 +175,7 @@ def grow_mask(C: torch.Tensor, num_verify_tokens: int) -> torch.Tensor:
     
     It then constructs for each row:
          [ A, B, 0 ]
-         [ A, 0, B ]
+         [ A, B, 0 ]
          
     and finally concatenates across rows.
     
@@ -184,10 +184,6 @@ def grow_mask(C: torch.Tensor, num_verify_tokens: int) -> torch.Tensor:
                           n = split + b (with b = n - split).
         width (int): The number of rows to reshape the flattened tensor into.
         split (int): The number of columns that belong to A in each row.
-        
-    Returns:
-        torch.Tensor: A 2-D boolean tensor with shape (2 * width, split + 2 * b)
-                      representing the desired block structure.
     """
     X = C.view(num_verify_tokens, -1)# .contiguous()
     
@@ -196,7 +192,10 @@ def grow_mask(C: torch.Tensor, num_verify_tokens: int) -> torch.Tensor:
     B = X[..., -num_verify_tokens:]# .contiguous()
     zeros = torch.zeros_like(B, dtype=C.dtype)
     top = torch.cat([A, B, zeros], dim=-1)
-    bottom = torch.cat([A, zeros, B], dim=-1)
+
+    # bottom = torch.cat([A, zeros, B], dim=-1)
+    bottom = torch.cat([A, B, zeros], dim=-1)
+    
     out = torch.cat([top, bottom], dim=0)
     
     return out.flatten()# .contiguous()# .view(-1, out.size(-1))
@@ -407,9 +406,7 @@ class PhoenixVerifyInput:
             [self.draft_token, torch.full([1], -1, dtype=torch.int32, device="cuda")],
             dim=-1,
         )
-
-        # print(torch.max(self.retrive_index))
-
+        
         candidates = draft_token[self.retrive_index]
         if batch.sampling_info.is_all_greedy:
             # temp == 0
@@ -495,6 +492,7 @@ class PhoenixVerifyInput:
                 if req.finished():
                     has_finished = True
                     # set all tokens after finished token to -1 and break
+                    # print("finished and about to break")
                     accept_index[i, j + 1 :] = -1
                     break
                 else:
@@ -510,9 +508,15 @@ class PhoenixVerifyInput:
         verified_id = predict[accept_index]
 
 
-        evict_mask = torch.full_like(self.draft_token, True, dtype=torch.bool)
+        if batch.spec_info.is_lora:
+            evict_mask = torch.full_like(torch.cat([self.draft_token, self.draft_token], dim=-0), True, dtype=torch.bool)
+        else:
+            evict_mask = torch.full_like(self.draft_token, True, dtype=torch.bool)
         
         evict_mask[accept_index] = False
+        # assert torch.all(evict_mask[evict_mask.shape[0]//2:])
+
+
         mem_need_free_idx = batch.out_cache_loc[evict_mask]
         batch.token_to_kv_pool.free(mem_need_free_idx)
         assign_req_to_token_pool[(bs,)](
@@ -534,8 +538,10 @@ class PhoenixVerifyInput:
             # print("new_accept_index: ", new_accept_index)
 
 
-            draft_input.hidden_states = logits_output.hidden_states[new_accept_index]
-            draft_input.next_token_logits = logits_output.next_token_logits[new_accept_index]
+            # draft_input.hidden_states = logits_output.hidden_states[new_accept_index]
+            # draft_input.next_token_logits = logits_output.next_token_logits[new_accept_index]
+            # logits_output.next_token_logits = logits_output.next_token_logits[new_accept_index]
+            # logits_output.hidden_states = logits_output.hidden_states[new_accept_index]
 
             draft_input.verified_id = predict[new_accept_index]
             draft_input.accept_length = accept_length[unfinished_index]
@@ -552,16 +558,11 @@ class PhoenixVerifyInput:
                 draft_input.req_pool_indices_for_draft_extend = batch.req_pool_indices
 
 
-        # draft_input.hidden_states = logits_output.hidden_states[accept_index]
-        # draft_input.next_token_logits = logits_output.next_token_logits[accept_index]
-
-        # print("draft_input.hidden_states: ", draft_input.hidden_states.shape)
-        # print("draft_input.next_token_logits: ", draft_input.next_token_logits.shape)
-
+        draft_input.hidden_states = logits_output.hidden_states[accept_index]
+        draft_input.next_token_logits = logits_output.next_token_logits[accept_index]
         logits_output.next_token_logits = logits_output.next_token_logits[accept_index]
         logits_output.hidden_states = logits_output.hidden_states[accept_index]
-        # print("logits_output.next_token_logits: ", logits_output.next_token_logits.shape)
-        # print("logits_output.hidden_states: ", logits_output.hidden_states.shape)
+
         return (
             draft_input,
             logits_output,

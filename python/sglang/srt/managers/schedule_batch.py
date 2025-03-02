@@ -425,12 +425,19 @@ class Req:
             self.finished_reason = FINISH_LENGTH(
                 length=self.sampling_params.max_new_tokens
             )
+
             return
 
         last_token_id = self.output_ids[-1]
 
         if not self.sampling_params.ignore_eos:
             matched_eos = False
+
+            # print(f"last_token_id: {last_token_id}")
+            # print(f"self.sampling_params.stop_token_ids: {self.sampling_params.stop_token_ids}")
+            # print(f"self.eos_token_ids: {self.eos_token_ids}")
+            # print(f"self.tokenizer.eos_token_id: {self.tokenizer.eos_token_id}")
+            # print(f"self.tokenizer.additional_stop_token_ids: {self.tokenizer.additional_stop_token_ids}")
 
             # Check stop token ids
             if self.sampling_params.stop_token_ids:

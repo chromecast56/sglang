@@ -4,20 +4,22 @@ into two separate models that are Llama-style.
 
 Usage:
     python axolotl_to_sglang.py \
+         --model_name meta-llama/Meta-Llama-3.1-8B-Instruct \
          --merged_model_dir /data/jamesliu/models/models--togethercomputer--phoenix-1layer-baseline/snapshots/8261c2483ce3382c5c1d5d14d77ca42386bc5a75/checkpoint-93225 \
          --base_model_dir /data/jamesliu/sglang/phoenix_1layer_baseline/base_model \
          --phoenix_model_dir /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --phoenix_num_layers 1
 
 For LoRA:
     python axolotl_to_sglang.py \
+         --model_name meta-llama/Meta-Llama-3.1-8B-Instruct \
          --merged_model_dir /data/franklin/checkpoints/phoenix/phoenix-pretrain-1layer-5epochs-lora-target/checkpoint-93225 \
          --base_model_dir /data/jamesliu/sglang/phoenix_1layer_lora/base_model \
-         --phoenix_model_dir /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --phoenix_num_layers 1 --lora_rank 64
+         --phoenix_model_dir /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --phoenix_num_layers 1 --lora_rank 64 --lora_alpha 128
 
 python axolotl_to_sglang.py \
          --merged_model_dir /data/franklin/checkpoints/phoenix/phoenix-pretrain-2layer-5epochs-lora-target/checkpoint-93225 \
          --base_model_dir /data/jamesliu/sglang/phoenix_2layer_lora/base_model \
-         --phoenix_model_dir /data/jamesliu/sglang/phoenix_2layer_lora/phoenix_model --phoenix_num_layers 2 --lora_rank 64
+         --phoenix_model_dir /data/jamesliu/sglang/phoenix_2layer_lora/phoenix_model --phoenix_num_layers 2 --lora_rank 64 --lora_alpha 128
 
          
 For example, if you trained togethercomputer/phoenix-1layer-baseline, point
@@ -117,32 +119,19 @@ def extract_state_dicts(merged_dir):
         # lora
         if key.startswith("model.base_model.model."):
             new_key = key[len("model.base_model.model."):]
-            # Remove ".default" from keys for LoRA modules (lora_A or lora_B)
-            import re
-            new_key = re.sub(r"(lora_[AB])\.default", r"\1", new_key)
-            base_sd[new_key] = value
+            if "lora_A" in new_key or "lora_B" in new_key:
+                # Remove ".default" from keys for LoRA modules (lora_A or lora_B)
+                import re
+                new_key = re.sub(r"(lora_[AB])\.default", r"\1", new_key)
+                base_sd[new_key] = value
 
-            print(key, new_key)
-
-            if "q_proj" in key and "lora" in key:
-                print("q_proj: ", value)
-            elif "k_proj" in key and "lora" in key:
-                print("k_proj: ", value)
-            elif "v_proj" in key and "lora" in key:
-                print("v_proj: ", value)
-                
+                print(key, new_key)
 
         # nonlora
-        elif key.startswith("model.model."):
-            # Remove "model.model." so that it matches the expected keys in LlamaForCausalLM
-            new_key = key[len("model."):]
-            base_sd[new_key] = value
-            # print(key, new_key)
         elif key.startswith("model."):
             new_key = key[len("model."):]
             base_sd[new_key] = value
-
-
+            print(key, new_key)
         elif key.startswith("phoenix_head.fc"):
             new_key = f"model.{key[len('phoenix_head.'):]}"
             phoenix_sd[new_key] = value
@@ -168,13 +157,13 @@ def extract_state_dicts(merged_dir):
     return base_sd, phoenix_sd
 
 
-def save_separated_models(merged_dir, base_model_dir, phoenix_model_dir, phoenix_num_layers, lora_rank=None):
+def save_separated_models(model_name, merged_dir, base_model_dir, phoenix_model_dir, phoenix_num_layers, lora_rank=None, lora_alpha=None):
     """
     Loads the merged checkpoint from merged_dir, splits the state dict
     into base and phoenix portions, creates two separate HF models, and saves them.
     """
     # load config from merged directory (i.e. the original config.json)
-    config = AutoConfig.from_pretrained(merged_dir)
+    config = AutoConfig.from_pretrained(model_name)
 
     # print(config)
 
@@ -197,6 +186,11 @@ def save_separated_models(merged_dir, base_model_dir, phoenix_model_dir, phoenix
         config.architectures = ["LlamaForCausalLMLoRA"]
         config.model_type = "llama"
         config.lora_rank = lora_rank
+
+        assert lora_alpha is not None, "lora_alpha must be provided for LoRA models"
+        config.lora_alpha = lora_alpha
+
+
         base_model = LlamaForCausalLMLoRA(config, lora_rank).to(dtype)
 
     missing_keys, unexpected_keys = base_model.load_state_dict(base_sd, strict=False)
@@ -209,7 +203,7 @@ def save_separated_models(merged_dir, base_model_dir, phoenix_model_dir, phoenix
     base_model.save_pretrained(base_model_dir)
 
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(merged_dir)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.save_pretrained(base_model_dir)
 
     # ----- Create and save the Phoenix model -----
@@ -239,6 +233,8 @@ def save_separated_models(merged_dir, base_model_dir, phoenix_model_dir, phoenix
 
 def main():
     parser = argparse.ArgumentParser(description="Split merged phoenix-base HF model into separate models.")
+    parser.add_argument("--model_name", type=str, required=True,
+                        help=".")
     parser.add_argument("--merged_model_dir", type=str, required=True,
                         help="Directory containing the merged checkpoint (config.json and safetensors files).")
     parser.add_argument("--base_model_dir", type=str, required=True,
@@ -252,13 +248,16 @@ def main():
     parser.add_argument("--lora_rank", type=int, default=None,
                         help="The rank of the LoRA modules.")
 
+    parser.add_argument("--lora_alpha", type=float, default=None,
+                        help="The alpha of the LoRA modules.")
+
     args = parser.parse_args()
 
     # Create output directories if needed.
     os.makedirs(args.base_model_dir, exist_ok=True)
     os.makedirs(args.phoenix_model_dir, exist_ok=True)
     
-    save_separated_models(args.merged_model_dir, args.base_model_dir, args.phoenix_model_dir, args.phoenix_num_layers, args.lora_rank)
+    save_separated_models(args.model_name, args.merged_model_dir, args.base_model_dir, args.phoenix_model_dir, args.phoenix_num_layers, args.lora_rank, args.lora_alpha)
     print("Separation complete.")
 
 

@@ -147,41 +147,27 @@ class PhoenixWorker(TpModelWorker):
             )
 
         else:
+            # WTF ? Why is the forward mode EXTEND and not PREFILL ?
+            # NOTE: its because PREFILL is depreciated.
+
+
+
             if self.server_args.speculative_phoenix_is_lora:
-                model_worker_batch_temp = batch.get_model_worker_batch()
-                # WTF ? Why is the forward mode EXTEND and not PREFILL ?
-                # NOTE: its because PREFILL is depreciated.
-
-
-                # NOTE: Double prefill is a temp fix. Is incompatible (slow) with RadixAttention.
-                model_worker_batch_temp.capture_hidden_mode = CaptureHiddenMode.FULL
-                model_worker_batch_temp.forward_mode = ForwardMode.EXTEND_LORA
-                # model_worker_batch.forward_mode = ForwardMode.EXTEND_NOLORA
-                model_worker_batch_temp.save_kv_cache = False
-                # Step 1: Get LoRA hidden states
-                logits_output_temp, _ = self.target_worker.forward_batch_generation(
-                    model_worker_batch_temp
-                )
-
-                # save hidden states
-                hidden_states = logits_output_temp.hidden_states
-
                 model_worker_batch = batch.get_model_worker_batch()
-                model_worker_batch.forward_mode = ForwardMode.EXTEND_NOLORA
-                model_worker_batch.capture_hidden_mode = CaptureHiddenMode.NULL
-                # Step 2: Get base KVs and next token ids
+                model_worker_batch.capture_hidden_mode = CaptureHiddenMode.FULL
                 logits_output, next_token_ids = self.target_worker.forward_batch_generation(
                     model_worker_batch
                 )
-
+                hidden_states = logits_output.hidden_states
             else:
                 model_worker_batch = batch.get_model_worker_batch()
                 model_worker_batch.capture_hidden_mode = CaptureHiddenMode.FULL
                 logits_output, next_token_ids = self.target_worker.forward_batch_generation(
                     model_worker_batch
                 )
-                
                 hidden_states = logits_output.hidden_states
+            
+            
 
             batch.spec_info = PhoenixDraftInput(
                 hidden_states=hidden_states,
@@ -205,13 +191,7 @@ class PhoenixWorker(TpModelWorker):
             num_tokens = spec_info.draft_token_num
             batch.spec_info.draft_token_num = num_tokens//2
 
-            # torch.set_printoptions(sci_mode=False)
-
-            # print("logits output 1: ", logits_output.next_token_logits[:num_tokens//2, 0])
-            # print("logits output 2: ", logits_output.next_token_logits[num_tokens//2:, 0])
-
-            # print("hidden states 1: ", logits_output.hidden_states[:num_tokens//2, 0])
-            # print("hidden states 2: ", logits_output.hidden_states[num_tokens//2:, 0])
+            batch.spec_info.draft_token = batch.spec_info.draft_token[:num_tokens//2]
 
             logits_output.hidden_states = logits_output.hidden_states[num_tokens//2:]
             logits_output.next_token_logits = logits_output.next_token_logits[:num_tokens//2]
@@ -253,6 +233,7 @@ class PhoenixWorker(TpModelWorker):
         # print(f"batch.out_cache_loc: {batch.out_cache_loc.shape}")            # [seq_len * topk * spec_steps]
         batch.seq_lens_sum = torch.sum(batch.seq_lens).item()
         spec_info.positions = batch.seq_lens.repeat_interleave(self.topk, dim=0)
+
         # Get forward batch
         # spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
         spec_info.capture_hidden_mode = CaptureHiddenMode.NULL
@@ -317,7 +298,6 @@ class PhoenixWorker(TpModelWorker):
         parents_list: List[torch.Tensor] = []
 
         spec_info.hidden_states = spec_info.hidden_states.repeat_interleave(self.topk, dim=0)
-        # print(f"spec_info.hidden_states: {spec_info.hidden_states.shape}") # [bsz * topk, hidden_size]
         # Forward multiple steps
         scores = None
         for i in range(self.speculative_num_steps):
@@ -359,14 +339,14 @@ class PhoenixWorker(TpModelWorker):
         self._set_mem_pool(batch, self.model_runner)
         batch.spec_info.prepare_for_extend(batch)
 
-        # batch.spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
+        # batch.spec_info.capture_hidden_mode = CaptureHiddenMode.LAST # [h0 h1' h2' h3']
         batch.spec_info.capture_hidden_mode = CaptureHiddenMode.NULL
 
         model_worker_batch = batch.get_model_worker_batch()
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
 
         logits_output = self.model_runner.forward(forward_batch)
-        logits_output.hidden_states = batch.spec_info.hidden_states[-1:]
+        logits_output.hidden_states = batch.spec_info.hidden_states[-1:] # [h0 h0 h0 h0]
 
 
         self.capture_for_decode(logits_output, forward_batch)

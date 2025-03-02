@@ -526,6 +526,7 @@ class ParallelLMHead(VocabParallelEmbedding):
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
         use_presharded_weights: bool = False,
+        enable_tp: bool = True,
     ):
         super().__init__(
             num_embeddings,
@@ -536,6 +537,7 @@ class ParallelLMHead(VocabParallelEmbedding):
             quant_config,
             prefix,
             use_presharded_weights=use_presharded_weights,
+            enable_tp=enable_tp,
         )
         self.quant_config = quant_config
         if bias:

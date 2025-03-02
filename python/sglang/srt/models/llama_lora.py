@@ -1,21 +1,3 @@
-# Copyright 2023-2024 SGLang Team
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
-# Adapted from
-# https://github.com/vllm-project/vllm/blob/c7f2cf2b7f67bce5842fedfdba508440fe257375/vllm/model_executor/models/llama.py#L1
-"""Inference-only LLaMA model compatible with HuggingFace weights."""
-
 import logging
 from typing import Any, Dict, Iterable, Optional, Tuple
 
@@ -68,31 +50,19 @@ class LlamaMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        self.gate_proj = LoRALinear(
+        self.gate_up_proj = LoRAGateUpLinear(
             input_size=hidden_size,
-            output_size=intermediate_size,
-            prefix=f"{prefix}.gate_proj",
+            intermediate_size=intermediate_size,
+            prefix=f"{prefix}.gate_up_proj",
             lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
         )
-        self.up_proj = LoRALinear(
-            input_size=hidden_size,
-            output_size=intermediate_size,
-            prefix=f"{prefix}.up_proj",
-            lora_rank=config.lora_rank,
-        )
-
-
-        # self.gate_up_proj = LoRAGateUpLinear(
-        #     input_size=hidden_size,
-        #     intermediate_size=intermediate_size,
-        #     prefix=f"{prefix}.gate_up_proj",
-        #     lora_rank=config.lora_rank,
-        # )
         self.down_proj = LoRALinear(
             input_size=intermediate_size,
             output_size=hidden_size,
             prefix=f"{prefix}.down_proj",
             lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
         )
         if hidden_act != "silu":
             raise ValueError(
@@ -102,9 +72,9 @@ class LlamaMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x, forward_batch):
-        # gate_up = self.gate_up_proj(x, forward_batch)
+        gate_up = self.gate_up_proj(x, forward_batch)
 
-        gate_up = torch.cat([self.gate_proj(x, forward_batch), self.up_proj(x, forward_batch)], dim=-1)
+        # gate_up = torch.cat([self.gate_proj(x, forward_batch), self.up_proj(x, forward_batch)], dim=-1)
 
         x = self.act_fn(gate_up)
 
@@ -153,40 +123,22 @@ class LlamaAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
-
-
-        self.q_proj = LoRALinear(
-            input_size=hidden_size,
-            output_size=self.total_num_heads * self.head_dim,
-            prefix=f"{prefix}.q_proj",
-            lora_rank=config.lora_rank,
-        )
-        self.k_proj = LoRALinear(
-            input_size=hidden_size,
-            output_size=self.total_num_kv_heads * self.head_dim,
-            prefix=f"{prefix}.k_proj",
-            lora_rank=config.lora_rank,
-        )
-        self.v_proj = LoRALinear(
-            input_size=hidden_size,
-            output_size=self.total_num_kv_heads * self.head_dim,
-            prefix=f"{prefix}.v_proj",
-            lora_rank=config.lora_rank,
-        )
         
-        # self.qkv_proj = LoRAQKVLinear(
-        #     input_size=hidden_size,
-        #     head_dim=self.head_dim,
-        #     total_num_heads=self.total_num_heads,
-        #     total_num_kv_heads=self.total_num_kv_heads,
-        #     prefix=f"{prefix}.qkv_proj",
-        #     lora_rank=config.lora_rank,
-        # )
+        self.qkv_proj = LoRAQKVLinear(
+            input_size=hidden_size,
+            head_dim=self.head_dim,
+            total_num_heads=self.total_num_heads,
+            total_num_kv_heads=self.total_num_kv_heads,
+            prefix=f"{prefix}.qkv_proj",
+            lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+        )
         self.o_proj = LoRALinear(
             input_size=self.total_num_heads * self.head_dim,
             output_size=hidden_size,
             prefix=f"{prefix}.o_proj",
             lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
         )
 
         self.rotary_emb = get_rope(
@@ -211,17 +163,15 @@ class LlamaAttention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        # qkv = self.qkv_proj(hidden_states, forward_batch)
-        # q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        qkv = self.qkv_proj(hidden_states, forward_batch)
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
-        save_kv_cache = False if hasattr(forward_batch, "save_kv_cache") and not forward_batch.save_kv_cache else True
-
-        q = self.q_proj(hidden_states, forward_batch)
-        k = self.k_proj(hidden_states, forward_batch)
-        v = self.v_proj(hidden_states, forward_batch)
+        # q = self.q_proj(hidden_states, forward_batch)
+        # k = self.k_proj(hidden_states, forward_batch) # NOTE: maybe code it to not do kv project for lora tokens
+        # v = self.v_proj(hidden_states, forward_batch)
 
         q, k = self.rotary_emb(positions, q, k)
-        attn_output = self.attn(q, k, v, forward_batch, save_kv_cache=save_kv_cache)
+        attn_output = self.attn(q, k, v, forward_batch)
         # output, _ = self.o_proj(attn_output)
         output = self.o_proj(attn_output, forward_batch)
         return output
@@ -439,6 +389,7 @@ class LlamaForCausalLMLoRA(nn.Module):
         get_embedding: bool = False,
     ) -> LogitsProcessorOutput:
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
+
         if not get_embedding:
             return self.logits_processor(
                 input_ids, hidden_states, self.lm_head, forward_batch
@@ -487,52 +438,53 @@ class LlamaForCausalLMLoRA(nn.Module):
 
     # NOTE: To extend to TP, need to make MergedColumnParallelLinear and QKVParallelLinears
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
-        stacked_params_mapping = [
-            (".q_proj.W_A", ".q_proj.base_layer", "W"),
-            (".q_proj.W_A", ".q_proj.lora_A", "A"),
-            (".q_proj.B", ".q_proj.lora_B", "B"),
-            (".k_proj.W_A", ".k_proj.base_layer", "W"),
-            (".k_proj.W_A", ".k_proj.lora_A", "A"),
-            (".k_proj.B", ".k_proj.lora_B", "B"),
-            (".v_proj.W_A", ".v_proj.base_layer", "W"),
-            (".v_proj.W_A", ".v_proj.lora_A", "A"),
-            (".v_proj.B", ".v_proj.lora_B", "B"),
-            (".o_proj.W_A", ".o_proj.base_layer", "W"),
-            (".o_proj.W_A", ".o_proj.lora_A", "A"),
-            (".o_proj.B", ".o_proj.lora_B", "B"),
-            (".gate_proj.W_A", ".gate_proj.base_layer", "W"),
-            (".gate_proj.W_A", ".gate_proj.lora_A", "A"),
-            (".gate_proj.B", ".gate_proj.lora_B", "B"),
-            (".up_proj.W_A", ".up_proj.base_layer", "W"),
-            (".up_proj.W_A", ".up_proj.lora_A", "A"),
-            (".up_proj.B", ".up_proj.lora_B", "B"),
-            (".down_proj.W_A", ".down_proj.base_layer", "W"),
-            (".down_proj.W_A", ".down_proj.lora_A", "A"),
-            (".down_proj.B", ".down_proj.lora_B", "B"),
-        ]
         # stacked_params_mapping = [
-        #     (".qkv_proj.W_A", ".q_proj.base_layer", "q_base"),
-        #     (".qkv_proj.W_A", ".q_proj.lora_A", "q_lora_A"),
-        #     (".qkv_proj.B", ".q_proj.lora_B", "q_lora_B"),
-        #     (".qkv_proj.W_A", ".k_proj.base_layer", "k_base"),
-        #     (".qkv_proj.W_A", ".k_proj.lora_A", "k_lora_A"),
-        #     (".qkv_proj.B", ".k_proj.lora_B", "k_lora_B"),
-        #     (".qkv_proj.W_A", ".v_proj.base_layer", "v_base"),
-        #     (".qkv_proj.W_A", ".v_proj.lora_A", "v_lora_A"),
-        #     (".qkv_proj.B", ".v_proj.lora_B", "v_lora_B"),
+        #     (".q_proj.W_A", ".q_proj.base_layer", "W"),
+        #     (".q_proj.W_A", ".q_proj.lora_A", "A"),
+        #     (".q_proj.B", ".q_proj.lora_B", "B"),
+        #     (".k_proj.W_A", ".k_proj.base_layer", "W"),
+        #     (".k_proj.W_A", ".k_proj.lora_A", "A"),
+        #     (".k_proj.B", ".k_proj.lora_B", "B"),
+        #     (".v_proj.W_A", ".v_proj.base_layer", "W"),
+        #     (".v_proj.W_A", ".v_proj.lora_A", "A"),
+        #     (".v_proj.B", ".v_proj.lora_B", "B"),
         #     (".o_proj.W_A", ".o_proj.base_layer", "W"),
         #     (".o_proj.W_A", ".o_proj.lora_A", "A"),
         #     (".o_proj.B", ".o_proj.lora_B", "B"),
-        #     (".gate_up_proj.W_A", ".gate_proj.base_layer", "gate_base"),
-        #     (".gate_up_proj.W_A", ".gate_proj.lora_A", "gate_lora_A"),
-        #     (".gate_up_proj.B", ".gate_proj.lora_B", "gate_lora_B"),
-        #     (".gate_up_proj.W_A", ".up_proj.base_layer", "up_base"),
-        #     (".gate_up_proj.W_A", ".up_proj.lora_A", "up_lora_A"),
-        #     (".gate_up_proj.B", ".up_proj.lora_B", "up_lora_B"),
+        #     (".gate_proj.W_A", ".gate_proj.base_layer", "W"),
+        #     (".gate_proj.W_A", ".gate_proj.lora_A", "A"),
+        #     (".gate_proj.B", ".gate_proj.lora_B", "B"),
+        #     (".up_proj.W_A", ".up_proj.base_layer", "W"),
+        #     (".up_proj.W_A", ".up_proj.lora_A", "A"),
+        #     (".up_proj.B", ".up_proj.lora_B", "B"),
         #     (".down_proj.W_A", ".down_proj.base_layer", "W"),
         #     (".down_proj.W_A", ".down_proj.lora_A", "A"),
         #     (".down_proj.B", ".down_proj.lora_B", "B"),
         # ]
+
+        stacked_params_mapping = [
+            (".qkv_proj.W_A", ".q_proj.base_layer", "q_base"),
+            (".qkv_proj.W_A", ".q_proj.lora_A", "q_lora_A"),
+            (".qkv_proj.B", ".q_proj.lora_B", "q_lora_B"),
+            (".qkv_proj.W_A", ".k_proj.base_layer", "k_base"),
+            (".qkv_proj.W_A", ".k_proj.lora_A", "k_lora_A"),
+            (".qkv_proj.B", ".k_proj.lora_B", "k_lora_B"),
+            (".qkv_proj.W_A", ".v_proj.base_layer", "v_base"),
+            (".qkv_proj.W_A", ".v_proj.lora_A", "v_lora_A"),
+            (".qkv_proj.B", ".v_proj.lora_B", "v_lora_B"),
+            (".o_proj.W_A", ".o_proj.base_layer", "W"),
+            (".o_proj.W_A", ".o_proj.lora_A", "A"),
+            (".o_proj.B", ".o_proj.lora_B", "B"),
+            (".gate_up_proj.W_A", ".gate_proj.base_layer", "gate_base"),
+            (".gate_up_proj.W_A", ".gate_proj.lora_A", "gate_lora_A"),
+            (".gate_up_proj.B", ".gate_proj.lora_B", "gate_lora_B"),
+            (".gate_up_proj.W_A", ".up_proj.base_layer", "up_base"),
+            (".gate_up_proj.W_A", ".up_proj.lora_A", "up_lora_A"),
+            (".gate_up_proj.B", ".up_proj.lora_B", "up_lora_B"),
+            (".down_proj.W_A", ".down_proj.base_layer", "W"),
+            (".down_proj.W_A", ".down_proj.lora_A", "A"),
+            (".down_proj.B", ".down_proj.lora_B", "B"),
+        ]
 
         params_dict = dict(self.named_parameters())
         # print(params_dict.keys())
@@ -541,12 +493,6 @@ class LlamaForCausalLMLoRA(nn.Module):
             # print(name)
             if "rotary_emb.inv_freq" in name or "projector" in name:
                 continue
-            # if "rotary_emb.cos_cached" in name or "rotary_emb.sin_cached" in name:
-            #     # Models trained using ColossalAI may include these tensors in
-            #     # the checkpoint. Skip them.
-            #     continue
-            # if name.startswith("model.vision_tower") and name not in params_dict:
-            #     continue
 
             for param_name, weight_name, shard_id in stacked_params_mapping:       # iterate over weights in model (qkv_proj, gate_up_proj)
                 if weight_name not in name:
@@ -571,6 +517,8 @@ class LlamaForCausalLMLoRA(nn.Module):
                 # Skip loading kv_scale from ckpts towards new design.
                 if name.endswith(".kv_scale") and name not in params_dict:
                     continue
+
+                # print(params_dict.keys())
                 if name in params_dict.keys():
                     param = params_dict[name]
                     weight_loader = getattr(
@@ -579,6 +527,7 @@ class LlamaForCausalLMLoRA(nn.Module):
                     weight_loader(param, loaded_weight)
                 else:
                     logger.warning(f"Parameter {name} not found in params_dict")
+
 
     def get_weights_by_name(
         self, name: str, truncate_size: int = 100, tp_size: int = 1
