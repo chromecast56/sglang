@@ -9,14 +9,65 @@ wget -O question.jsonl https://raw.githubusercontent.com/lm-sys/FastChat/main/fa
 ### Benchmark sglang
 ```
 
+python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3.1-8B-Instruct  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 6 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 64 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16
+
+python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --speculative-num-steps 6 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 128 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16 \
+    --speculative-phoenix-is-lora --enable-torch-compile
+
+
+k=1:
+
+python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3.1-8B-Instruct  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 4 \
+    --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16
+
+python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --speculative-num-steps 4 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 8 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16 \
+    --speculative-phoenix-is-lora --enable-torch-compile
+
+
+
+HF_MODEL_PATH=/data/jamesliu/sglang/merged_1layer_ref python -m sglang.launch_server --model-path /data/jamesliu/sglang/phoenix_1layer_lora/base_model \
+    --port 30000 --disable-cuda-graph --dtype bfloat16 --mem-fraction 0.8
+
+
+
+
+
+python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --speculative-num-steps 5 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 128 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16 \
+    --speculative-phoenix-is-lora --enable-torch-compile
+
 
 python3 -m sglang.launch_server --model /data/jamesliu/sglang/phoenix_1layer_lora/base_model  --speculative-algo PHOENIX \
     --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 5 \
     --speculative-eagle-topk 8 --speculative-num-draft-tokens 128 \
     --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16 \
-    --speculative-phoenix-is-lora
+    --speculative-phoenix-is-lora --enable-torch-compile
 
 
+python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3.1-8B-Instruct  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 5 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 64 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16
+
+
+
+python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3.1-8B-Instruct  --speculative-algo PHOENIX \
+    --speculative-draft /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --speculative-num-steps 5 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 64 \
+    --cuda-graph-max-bs 1 --mem-fraction 0.7 --dtype bfloat16
 
 k=1 testing:
 
