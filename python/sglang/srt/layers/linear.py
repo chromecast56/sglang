@@ -439,6 +439,7 @@ class LoRALinear(LinearBase):
         return tensor * ((self.lora_alpha / rank) ** 0.5)
  
     def forward(self, input_, forward_batch):
+        # return base_and_lora(input_, self.W_A.weight.data, self.B.weight.data)
         # return base_only(input_, self.W_A.weight.data, self.B.weight.data)
         if forward_batch.forward_mode.is_target_verify():
             return base_and_lora(input_, self.W_A.weight.data, self.B.weight.data)
@@ -475,6 +476,7 @@ class LoRALinear(LinearBase):
             param.data.copy_(self.apply_alpha(loaded_weight))
         else:
             raise ValueError(f"Unknown loaded_shard_id: {loaded_shard_id}")
+
 
 
 class LoRAGateUpLinear(LoRALinear):

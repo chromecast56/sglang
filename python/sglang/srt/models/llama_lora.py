@@ -57,6 +57,20 @@ class LlamaMLP(nn.Module):
             lora_rank=config.lora_rank,
             lora_alpha=config.lora_alpha,
         )
+        # self.gate_proj = LoRALinear(
+        #     input_size=hidden_size,
+        #     output_size=intermediate_size,
+        #     prefix=f"{prefix}.gate_proj",
+        #     lora_rank=config.lora_rank,
+        #     lora_alpha=config.lora_alpha,
+        # )
+        # self.up_proj = LoRALinear(
+        #     input_size=hidden_size,
+        #     output_size=intermediate_size,
+        #     prefix=f"{prefix}.up_proj",
+        #     lora_rank=config.lora_rank,
+        #     lora_alpha=config.lora_alpha,
+        # )
         self.down_proj = LoRALinear(
             input_size=intermediate_size,
             output_size=hidden_size,
@@ -475,12 +489,22 @@ class LlamaForCausalLMLoRA(nn.Module):
             (".o_proj.W_A", ".o_proj.base_layer", "W"),
             (".o_proj.W_A", ".o_proj.lora_A", "A"),
             (".o_proj.B", ".o_proj.lora_B", "B"),
+
             (".gate_up_proj.W_A", ".gate_proj.base_layer", "gate_base"),
             (".gate_up_proj.W_A", ".gate_proj.lora_A", "gate_lora_A"),
             (".gate_up_proj.B", ".gate_proj.lora_B", "gate_lora_B"),
             (".gate_up_proj.W_A", ".up_proj.base_layer", "up_base"),
             (".gate_up_proj.W_A", ".up_proj.lora_A", "up_lora_A"),
             (".gate_up_proj.B", ".up_proj.lora_B", "up_lora_B"),
+
+            # (".gate_proj.W_A", ".gate_proj.base_layer", "W"),
+            # (".gate_proj.W_A", ".gate_proj.lora_A", "A"),
+            # (".gate_proj.B", ".gate_proj.lora_B", "B"),
+            # (".up_proj.W_A", ".up_proj.base_layer", "W"),
+            # (".up_proj.W_A", ".up_proj.lora_A", "A"),
+            # (".up_proj.B", ".up_proj.lora_B", "B"),
+
+
             (".down_proj.W_A", ".down_proj.base_layer", "W"),
             (".down_proj.W_A", ".down_proj.lora_A", "A"),
             (".down_proj.B", ".down_proj.lora_B", "B"),

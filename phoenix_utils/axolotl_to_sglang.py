@@ -3,23 +3,18 @@ Script to split a merged HF checkpoint containing a base model and a phoenix hea
 into two separate models that are Llama-style.
 
 Usage:
-    python axolotl_to_sglang.py \
+python axolotl_to_sglang.py \
          --model_name meta-llama/Meta-Llama-3.1-8B-Instruct \
-         --merged_model_dir /data/jamesliu/models/models--togethercomputer--phoenix-1layer-baseline/snapshots/8261c2483ce3382c5c1d5d14d77ca42386bc5a75/checkpoint-93225 \
-         --base_model_dir /data/jamesliu/sglang/phoenix_1layer_baseline/base_model \
-         --phoenix_model_dir /data/jamesliu/sglang/phoenix_1layer_baseline/phoenix_model --phoenix_num_layers 1
+         --merged_model_dir /data/jamesliu/models/models--togethercomputer--phoenix-pretrain-1layer-10epochs-no-lora-lr-1e-4-tulu/snapshots/e3467052a5d55cb821b910527c358577a11d54f3/checkpoint-51560 \
+         --base_model_dir /data/jamesliu/sglang/tulu/llama-3.1-instruct-phoenix_1layer_baseline/base_model \
+         --phoenix_model_dir /data/jamesliu/sglang/tulu/llama-3.1-instruct-phoenix_1layer_baseline/phoenix_model --phoenix_num_layers 1
 
 For LoRA:
-    python axolotl_to_sglang.py \
-         --model_name meta-llama/Meta-Llama-3.1-8B-Instruct \
-         --merged_model_dir /data/franklin/checkpoints/phoenix/phoenix-pretrain-1layer-5epochs-lora-target/checkpoint-93225 \
-         --base_model_dir /data/jamesliu/sglang/phoenix_1layer_lora/base_model \
-         --phoenix_model_dir /data/jamesliu/sglang/phoenix_1layer_lora/phoenix_model --phoenix_num_layers 1 --lora_rank 64 --lora_alpha 128
-
 python axolotl_to_sglang.py \
-         --merged_model_dir /data/franklin/checkpoints/phoenix/phoenix-pretrain-2layer-5epochs-lora-target/checkpoint-93225 \
-         --base_model_dir /data/jamesliu/sglang/phoenix_2layer_lora/base_model \
-         --phoenix_model_dir /data/jamesliu/sglang/phoenix_2layer_lora/phoenix_model --phoenix_num_layers 2 --lora_rank 64 --lora_alpha 128
+         --model_name meta-llama/Meta-Llama-3.1-8B-Instruct \
+         --merged_model_dir /data/jamesliu/models/models--togethercomputer--phoenix-pretrain-1layer-10epochs-lora-target-rank64-lr-1e-4-tulu/snapshots/9c29891108cfe71481f3872e47f2f3f1eaed7587/checkpoint-51560 \
+         --base_model_dir /data/jamesliu/sglang/tulu/llama-3.1-instruct-phoenix_1layer_lora/base_model \
+         --phoenix_model_dir /data/jamesliu/sglang/tulu/llama-3.1-instruct-phoenix_1layer_lora/phoenix_model --phoenix_num_layers 1 --lora_rank 64 --lora_alpha 128
 
          
 For example, if you trained togethercomputer/phoenix-1layer-baseline, point
@@ -123,15 +118,17 @@ def extract_state_dicts(merged_dir):
                 # Remove ".default" from keys for LoRA modules (lora_A or lora_B)
                 import re
                 new_key = re.sub(r"(lora_[AB])\.default", r"\1", new_key)
-                base_sd[new_key] = value
+            else:
+                new_key = key[len("model.base_model.model."):]
 
-                print(key, new_key)
+            base_sd[new_key] = value
+            print(key, new_key)
 
         # nonlora
         elif key.startswith("model."):
             new_key = key[len("model."):]
             base_sd[new_key] = value
-            print(key, new_key)
+            # print(key, new_key)
         elif key.startswith("phoenix_head.fc"):
             new_key = f"model.{key[len('phoenix_head.'):]}"
             phoenix_sd[new_key] = value

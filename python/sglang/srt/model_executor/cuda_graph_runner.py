@@ -100,6 +100,10 @@ def set_torch_compile_config():
     torch._inductor.config.triton.unique_kernel_names = True
     torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
 
+    # NOTE: LoRA specific settings (default results in accuracy drop)
+    # Maintain numerical precision
+    torch._inductor.config.emulate_precision_casts = True
+
     # FIXME: tmp workaround
     torch._dynamo.config.accumulated_cache_size_limit = 1024
     if hasattr(torch._dynamo.config, "cache_size_limit"):

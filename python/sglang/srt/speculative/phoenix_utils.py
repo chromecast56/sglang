@@ -534,14 +534,7 @@ class PhoenixVerifyInput:
         if len(new_accept_index) > 0:
             new_accept_index = torch.tensor(new_accept_index, device="cuda")
 
-            print("accept_index: ", accept_index)
-            # print("new_accept_index: ", new_accept_index)
-
-
-            # draft_input.hidden_states = logits_output.hidden_states[new_accept_index]
-            # draft_input.next_token_logits = logits_output.next_token_logits[new_accept_index]
-            # logits_output.next_token_logits = logits_output.next_token_logits[new_accept_index]
-            # logits_output.hidden_states = logits_output.hidden_states[new_accept_index]
+            # print("accept_index: ", accept_index)
 
             draft_input.verified_id = predict[new_accept_index]
             draft_input.accept_length = accept_length[unfinished_index]
