@@ -282,6 +282,8 @@ class LlamaModel(nn.Module):
 
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
+        # NOTE: aux layers index
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -302,8 +304,12 @@ class LlamaModel(nn.Module):
                 forward_batch,
                 residual,
             )
+
+            # NOTE: if hidden state in aux layer index...
+
+            
         hidden_states, _ = self.norm(hidden_states, residual)
-        return hidden_states
+        return hidden_states#, aux hidden states NOTE
 
     # If this function is called, it should always initialize KV cache scale
     # factors (or else raise an exception). Thus, handled exceptions should

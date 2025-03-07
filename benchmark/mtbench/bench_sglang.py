@@ -65,6 +65,7 @@ def main(args):
         arguments,
         temperature=0,
         max_new_tokens=2048,
+        # max_new_tokens=128,
         num_threads=args.parallel,
         progress_bar=True,
     )

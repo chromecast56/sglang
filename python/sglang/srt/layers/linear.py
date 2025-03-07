@@ -431,6 +431,7 @@ class LoRALinear(LinearBase):
 
         set_weight_attrs(self.W_A.weight, {"weight_loader": self.weight_loader})
         set_weight_attrs(self.B.weight, {"weight_loader": self.weight_loader})
+
         
     def apply_alpha(self, tensor, rank=None):
         if rank is None:
