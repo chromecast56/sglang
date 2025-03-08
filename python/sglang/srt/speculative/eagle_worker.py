@@ -72,7 +72,7 @@ class EAGLEWorker(TpModelWorker):
 
         # Load hot token ids
         if self.speculative_algorithm.is_eagle3() and server_args.speculative_token_map is not None:
-            logger.warning("Speculative token map specified, but EAGLE3 models already have a speculative token map. Ignoring the specified token map.")
+            logger.warning("Speculative token map specified, but EAGLE3 models already have this. Ignoring the specified token map.")
             self.hot_token_id = None
         elif server_args.speculative_token_map is not None:
             self.hot_token_id = load_token_map(server_args.speculative_token_map)
@@ -94,15 +94,20 @@ class EAGLEWorker(TpModelWorker):
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
         )
 
+        embed, head = self.target_worker.model_runner.model.get_embed_and_head()
         if self.speculative_algorithm.is_eagle3():
             # grab hot token ids
-            self.hot_token_id = self.target_worker.model_runner.model.get_hot_token_id()
+            self.hot_token_id = self.draft_model_runner.model.get_hot_token_id()
             # EAGLE3 models don't share lm_head
             embed = self.target_worker.model_runner.model.get_embed()
             self.draft_model_runner.model.set_embed(embed)
+
+            # auxiliary hidden capture mode
+            num_layers = self.target_worker.model_runner.model.config.num_hidden_layers
+            layers_to_capture = [2, num_layers // 2, num_layers - 3]
+            self.target_worker.model_runner.model.set_layers_to_capture(layers_to_capture)
         else:
             # Share the embedding and lm_head
-            embed, head = self.target_worker.model_runner.model.get_embed_and_head()
             self.draft_model_runner.model.set_embed_and_head(embed, head)
 
         if self.hot_token_id is not None:
@@ -191,12 +196,17 @@ class EAGLEWorker(TpModelWorker):
         """
         assert not batch.spec_algorithm.is_none()
         if batch.forward_mode.is_decode():
+            print("Start Draft Decode")
             spec_info, to_free_cache_loc = self.draft(batch)
+
+            print("Start Target Verify")
             logits_output, verify_output, model_worker_batch = self.verify(
                 batch, spec_info
             )
             # Free cache loc (we put it here to avoid synchronization and hide kernel launch overhead.)
             self.token_to_kv_pool_allocator.free(to_free_cache_loc)
+
+            print("Start Draft KV Refresh")
             # if it is None, means all requests are finished
             if batch.spec_info.verified_id is not None:
                 self.forward_draft_extend_after_decode(batch)
@@ -209,10 +219,14 @@ class EAGLEWorker(TpModelWorker):
             )
 
         else:
+            print("Start generation")
+            print("Start Target Prefill")
             logits_output, next_token_ids, bid = self.forward_target_extend(batch)
+            print("Start Draft Prefill")
             self.forward_draft_extend(
                 batch, logits_output.hidden_states, next_token_ids
             )
+
             return logits_output, next_token_ids, bid, 0
 
     def forward_target_extend(

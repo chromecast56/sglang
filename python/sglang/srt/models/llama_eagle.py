@@ -105,7 +105,7 @@ class LlamaModel(nn.Module):
                 forward_batch,
                 residual,
             )
-        return hidden_states + residual
+        return hidden_states + residual, None
 
 
 class LlamaForCausalLMEagle(LlamaForCausalLM):

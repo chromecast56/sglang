@@ -4,6 +4,9 @@ import os
 import time
 import uuid
 
+import time
+import requests
+
 import sglang as sgl
 from sglang.test.test_utils import (
     add_common_sglang_args_and_parse,
@@ -38,7 +41,7 @@ def write_answers(filename, model_id, questions, answers):
 
 @sgl.function
 def answer_mt_bench(s, question_1, question_2):
-    s += sgl.system()
+    s += sgl.system("You are a helpful assistant.")
     s += sgl.user(question_1)
     s += sgl.assistant(sgl.gen("answer_1"))
     s += sgl.user(question_2)
@@ -61,14 +64,32 @@ def main(args):
     rets = answer_mt_bench.run_batch(
         arguments,
         temperature=0,
-        max_new_tokens=256,
+        max_new_tokens=2048,
         num_threads=args.parallel,
         progress_bar=True,
     )
     answers = [[s["answer_1"], s["answer_2"]] for s in rets]
-    latency = time.time() - tic
 
-    print(f"#questions: {len(questions)}, Latency: {latency:.2f}")
+    latency = time.time() - tic
+    num_output_tokens = sum(
+        s.get_meta_info("answer_1")["completion_tokens"] + s.get_meta_info("answer_2")["completion_tokens"] for s in rets
+    )
+
+    # NOTE: acceptance length is just completion_tokens / spec_verify_ct
+
+    # {'id': '3bb9c5ead109488d8ed5ee9cbecaec29', 'finish_reason': {'type': 'length', 'length': 256}, 'prompt_tokens': 37, 'spec_verify_ct': 101, 'completion_tokens': 256, 'cached_tokens': 0}
+
+    output_throughput = num_output_tokens / latency
+
+    has_verify = "spec_verify_ct" in rets[0].get_meta_info("answer_1")
+    if has_verify:
+        num_verify_tokens = sum(s.get_meta_info("answer_1")["spec_verify_ct"] + s.get_meta_info("answer_2")["spec_verify_ct"] for s in rets)
+
+        accept_length = num_output_tokens / num_verify_tokens
+    else:
+        accept_length = 1.0
+
+    print(f"#questions: {len(questions)}, Throughput: {output_throughput:.2f} token/s, Acceptance length: {accept_length:.2f}")
 
     # Write results
     model_id = backend.model_info["model_path"]
@@ -81,6 +102,8 @@ def main(args):
             "backend": args.backend,
             "num_gpus": 1,
             "latency": round(latency, 3),
+            "throughput": round(output_throughput, 3),
+            "accept_length": round(accept_length, 3),
             "num_requests": args.num_questions,
             "other": {
                 "num_questions": args.num_questions,
@@ -90,10 +113,16 @@ def main(args):
         fout.write(json.dumps(value) + "\n")
 
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--question-file", type=str, default="question.jsonl")
     parser.add_argument("--answer-file", type=str, default=None)
-    parser.add_argument("--num-questions", type=int, default=80)
-    args = add_common_sglang_args_and_parse(parser)
+    parser.add_argument("--num-questions", type=int, default=40)
+    parser.add_argument("--parallel", type=int, default=1)
+    parser.add_argument("--host", type=str, default="http://127.0.0.1")
+    parser.add_argument("--port", type=int, default=30000)
+    parser.add_argument("--backend", type=str, default="srt")
+    parser.add_argument("--result-file", type=str, default="result.jsonl")
+    args = parser.parse_args()
     main(args)

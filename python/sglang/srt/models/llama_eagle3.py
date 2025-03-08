@@ -27,12 +27,14 @@ from transformers import LlamaConfig
 
 from sglang.srt.layers.logits_processor import LogitsProcessor
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding,
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.models.llama import LlamaDecoderLayer, LlamaForCausalLM
+from sglang.srt.models.llama import LlamaDecoderLayer, LlamaForCausalLM, LlamaAttention
+from sglang.srt.layers.linear import RowParallelLinear, QKVParallelLinear
 
 
 class LlamaDecoderLayer(LlamaDecoderLayer):
@@ -45,11 +47,49 @@ class LlamaDecoderLayer(LlamaDecoderLayer):
     ) -> None:
         super().__init__(config, layer_id, quant_config, prefix)
 
-        # Skip the input_layernorm
-        # https://github.com/SafeAILab/EAGLE/blob/35c78f6cdc19a73e05cf5c330b4c358dad970c6a/eagle/model/cnets.py#L427
-        if layer_id == 0:
-            del self.input_layernorm
-            setattr(self, "input_layernorm", lambda x: x)
+        # override qkv
+        self.self_attn.qkv_proj = QKVParallelLinear(
+            2 * self.hidden_size,
+            self.self_attn.head_dim,
+            self.self_attn.total_num_heads,
+            self.self_attn.total_num_kv_heads,
+            bias=False,
+            quant_config=quant_config,
+            prefix=add_prefix("qkv_proj", prefix),
+        )
+
+        self.hidden_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    def forward(
+        self,
+        positions: torch.Tensor,
+        embeds: torch.Tensor,
+        hidden_states: torch.Tensor,
+        forward_batch: ForwardBatch,
+        residual: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        embeds = self.input_layernorm(embeds)
+
+        if residual is None:
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
+        else:
+            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+
+        hidden_states = torch.cat([embeds, hidden_states], dim=-1)
+
+        # Self Attention
+        hidden_states = self.self_attn(
+            positions=positions,
+            hidden_states=hidden_states,
+            forward_batch=forward_batch,
+        )
+
+        # Fully Connected
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+        hidden_states = self.mlp(hidden_states)
+        return hidden_states, residual
 
 
 class LlamaModel(nn.Module):
@@ -67,18 +107,10 @@ class LlamaModel(nn.Module):
             config.hidden_size,
             prefix=add_prefix("embed_tokens", prefix),
         )
-        self.layers = nn.ModuleList(
-            [
-                LlamaDecoderLayer(
-                    config,
-                    i,
-                    quant_config=quant_config,
-                    prefix=add_prefix(f"layers.{i}", prefix),
-                )
-                for i in range(config.num_hidden_layers)
-            ]
-        )
-        self.fc = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
+        self.midlayer = LlamaDecoderLayer(config, 0, quant_config, prefix)
+        self.fc = torch.nn.Linear(config.hidden_size * 3, config.hidden_size)
+
+        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -88,24 +120,29 @@ class LlamaModel(nn.Module):
         input_embeds: torch.Tensor = None,
     ) -> torch.Tensor:
         if input_embeds is None:
-            hidden_states = self.embed_tokens(input_ids)
+            embeds = self.embed_tokens(input_ids)
         else:
-            hidden_states = input_embeds
+            embeds = input_embeds
 
-        hidden_states = self.fc(
-            torch.cat((hidden_states, forward_batch.spec_info.hidden_states), dim=-1)
-        )
+        hidden_states = forward_batch.spec_info.hidden_states
+
+        # print(f"hidden_states: {hidden_states.shape}")
+        # print(f"embeds: {embeds.shape}")
+        if hidden_states.shape[-1] != embeds.shape[-1]:
+            print("3fc mode")
+            hidden_states = self.fc(hidden_states)
 
         residual = None
-        for i in range(len(self.layers)):
-            layer = self.layers[i]
-            hidden_states, residual = layer(
-                positions,
-                hidden_states,
-                forward_batch,
-                residual,
-            )
-        return hidden_states + residual
+        hidden_states, residual = self.midlayer(
+            positions,
+            embeds,
+            hidden_states,
+            forward_batch,
+            residual,
+        )
+
+        hidden_states, _ = self.norm(hidden_states, residual)
+        return hidden_states, None
 
 
 class LlamaForCausalLMEagle3(LlamaForCausalLM):
@@ -118,6 +155,10 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
         nn.Module.__init__(self)
         self.config = config
         self.quant_config = quant_config
+
+        if self.config.num_hidden_layers != 1:
+            raise ValueError("EAGLE3 currently only supports 1 layer")
+
         self.model = LlamaModel(
             config, quant_config=quant_config, prefix=add_prefix("model", prefix)
         )
@@ -137,9 +178,18 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         for name, loaded_weight in weights:
-            if "lm_head" not in name:
-                name = "model." + name
-                super().load_weights([(name, loaded_weight)])
+            if 'd2t' in name:
+                self.hot_token_id = loaded_weight
+
+            if 'd2t' not in name and 't2d' not in name and 'lm_head' not in name:
+                new_name = f"model.{name}"
+                print(new_name)
+                super().load_weights([(new_name, loaded_weight)])
+
+
+    def get_hot_token_id(self):
+        # print(self.hot_token_id[:200])
+        return self.hot_token_id
 
 
 EntryClass = [LlamaForCausalLMEagle3]

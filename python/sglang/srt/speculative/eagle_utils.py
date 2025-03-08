@@ -427,6 +427,8 @@ class EagleVerifyInput:
             req.spec_verify_ct += 1
         accept_length = (accept_index != -1).sum(dim=1) - 1
 
+        print(f"accept length: {accept_length}")
+
         accept_index = accept_index[accept_index != -1]
         accept_length_cpu = accept_length.tolist()
         verified_id = predict[accept_index]

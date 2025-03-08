@@ -220,6 +220,7 @@ class LogitsProcessor(nn.Module):
         self,
         input_ids,
         hidden_states,
+        aux_hidden_states,
         lm_head: VocabParallelEmbedding,
         logits_metadata: Union[LogitsMetadata, ForwardBatch],
     ) -> LogitsProcessorOutput:
@@ -232,6 +233,8 @@ class LogitsProcessor(nn.Module):
             or logits_metadata.forward_mode.is_target_verify()
         ):
             pruned_states = hidden_states
+            if aux_hidden_states is not None:
+                aux_pruned_states = [hidden for hidden in aux_hidden_states]
             sample_indices = None
             input_logprob_indices = None
         elif (
@@ -255,6 +258,8 @@ class LogitsProcessor(nn.Module):
                     - 1
                 )
             pruned_states = hidden_states[last_index]
+            if aux_hidden_states is not None:
+                aux_pruned_states = [hidden[last_index] for hidden in aux_hidden_states]
             sample_indices = None
             input_logprob_indices = None
         else:
@@ -317,15 +322,25 @@ class LogitsProcessor(nn.Module):
 
         hidden_states_to_store: Optional[torch.Tensor] = None
         # JAMES TODO: EAGLE3 modification
+        if aux_hidden_states is not None:
+            aux_hidden_states = torch.cat(aux_hidden_states, dim=-1)
         if logits_metadata.capture_hidden_mode.need_capture():
             if logits_metadata.capture_hidden_mode.is_full():
-                hidden_states_to_store = hidden_states
+                if aux_hidden_states is not None:
+                    hidden_states_to_store = aux_hidden_states
+                else:
+                    hidden_states_to_store = hidden_states
             elif logits_metadata.capture_hidden_mode.is_last():
                 # Get the last token hidden states. If sample_indices is None,
                 # pruned states only contain the last tokens already.
-                hidden_states_to_store = (
-                    pruned_states[sample_indices] if sample_indices else pruned_states
-                )
+                if aux_hidden_states is not None:
+                    hidden_states_to_store = (
+                        aux_pruned_states[sample_indices] if sample_indices else aux_pruned_states
+                    )
+                else:
+                    hidden_states_to_store = (
+                        pruned_states[sample_indices] if sample_indices else pruned_states
+                    )
             else:
                 assert False, "Should never reach"
 

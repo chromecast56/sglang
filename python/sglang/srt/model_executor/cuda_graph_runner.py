@@ -223,6 +223,7 @@ class CudaGraphRunner:
             if model_runner.spec_algorithm.is_eagle3():
                 self.hidden_states = torch.zeros(
                     (self.max_num_token, 3 * self.model_runner.model_config.hidden_size),
+                    # (self.max_num_token, self.model_runner.model_config.hidden_size),
                     dtype=self.model_runner.dtype,
                 )
             elif model_runner.spec_algorithm.is_eagle():
