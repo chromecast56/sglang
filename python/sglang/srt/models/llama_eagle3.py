@@ -69,14 +69,9 @@ class LlamaDecoderLayer(LlamaDecoderLayer):
         residual: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-
+        residual = hidden_states
         embeds = self.input_layernorm(embeds)
-
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.hidden_norm(hidden_states)
-        else:
-            hidden_states, residual = self.hidden_norm(hidden_states, residual)
+        hidden_states = self.hidden_norm(hidden_states)
 
         hidden_states = torch.cat([embeds, hidden_states], dim=-1)
         # Self Attention
@@ -145,6 +140,7 @@ class LlamaModel(nn.Module):
         
         hidden_states_to_logits, hidden_states_to_aux = self.norm(hidden_states, residual)
 
+        # For draft decode we capture the hidden state before norm
         return hidden_states_to_logits, [hidden_states_to_aux]
 
 
