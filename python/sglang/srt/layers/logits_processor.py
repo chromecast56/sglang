@@ -273,6 +273,7 @@ class LogitsProcessor(nn.Module):
             input_logprob_indices_pt = 0
             input_logprob_indices = []
             pt, pruned_states = 0, []
+            print("getting here")
             for extend_logprob_start_len, extend_len in zip(
                 logits_metadata.extend_logprob_start_lens_cpu,
                 logits_metadata.extend_seq_lens_cpu,
@@ -322,11 +323,10 @@ class LogitsProcessor(nn.Module):
 
         hidden_states_to_store: Optional[torch.Tensor] = None
         # JAMES TODO: EAGLE3 modification
-        if aux_hidden_states is not None:
-            aux_hidden_states = torch.cat(aux_hidden_states, dim=-1)
         if logits_metadata.capture_hidden_mode.need_capture():
             if logits_metadata.capture_hidden_mode.is_full():
                 if aux_hidden_states is not None:
+                    aux_hidden_states = torch.cat(aux_hidden_states, dim=-1)
                     hidden_states_to_store = aux_hidden_states
                 else:
                     hidden_states_to_store = hidden_states
@@ -334,6 +334,7 @@ class LogitsProcessor(nn.Module):
                 # Get the last token hidden states. If sample_indices is None,
                 # pruned states only contain the last tokens already.
                 if aux_hidden_states is not None:
+                    aux_pruned_states = torch.cat(aux_pruned_states, dim=-1)
                     hidden_states_to_store = (
                         aux_pruned_states[sample_indices] if sample_indices else aux_pruned_states
                     )
@@ -343,6 +344,8 @@ class LogitsProcessor(nn.Module):
                     )
             else:
                 assert False, "Should never reach"
+
+        # print(f"hidden_states_to_store: {hidden_states_to_store.shape}")
 
         if not logits_metadata.extend_return_logprob:
             # Decode mode or extend mode without return_logprob.

@@ -58,7 +58,7 @@ class LlamaDecoderLayer(LlamaDecoderLayer):
             prefix=add_prefix("qkv_proj", prefix),
         )
 
-        self.hidden_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.hidden_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -69,13 +69,14 @@ class LlamaDecoderLayer(LlamaDecoderLayer):
         residual: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
+
         embeds = self.input_layernorm(embeds)
 
         if residual is None:
             residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
+            hidden_states = self.hidden_norm(hidden_states)
         else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            hidden_states, residual = self.hidden_norm(hidden_states, residual)
 
         hidden_states = torch.cat([embeds, hidden_states], dim=-1)
 
@@ -123,13 +124,14 @@ class LlamaModel(nn.Module):
             embeds = self.embed_tokens(input_ids)
         else:
             embeds = input_embeds
+            print("BAD")
 
         hidden_states = forward_batch.spec_info.hidden_states
 
         # print(f"hidden_states: {hidden_states.shape}")
         # print(f"embeds: {embeds.shape}")
         if hidden_states.shape[-1] != embeds.shape[-1]:
-            print("3fc mode")
+            # print("3fc mode")
             hidden_states = self.fc(hidden_states)
 
         residual = None
@@ -141,8 +143,9 @@ class LlamaModel(nn.Module):
             residual,
         )
 
-        hidden_states, _ = self.norm(hidden_states, residual)
-        return hidden_states, None
+        hidden_states_to_logits, hidden_states_to_aux = self.norm(hidden_states, residual)
+        # return hidden_states_to_logits, None
+        return hidden_states_to_logits, [hidden_states_to_aux]
 
 
 class LlamaForCausalLMEagle3(LlamaForCausalLM):
@@ -168,7 +171,7 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
             self.lm_head = self.model.embed_tokens
         else:
             self.lm_head = ParallelLMHead(
-                getattr(config, "hot_vocab_size", config.vocab_size),
+                config.draft_vocab_size,
                 config.hidden_size,
                 quant_config=quant_config,
                 prefix=add_prefix("lm_head", prefix),
@@ -179,16 +182,17 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         for name, loaded_weight in weights:
             if 'd2t' in name:
-                self.hot_token_id = loaded_weight
+                self.hot_token_id = loaded_weight + torch.arange(loaded_weight.shape[0])
 
             if 'd2t' not in name and 't2d' not in name and 'lm_head' not in name:
                 new_name = f"model.{name}"
                 print(new_name)
                 super().load_weights([(new_name, loaded_weight)])
+            elif 'lm_head' in name:
+                super().load_weights([(name, loaded_weight)])
 
 
     def get_hot_token_id(self):
-        # print(self.hot_token_id[:200])
         return self.hot_token_id
 
 

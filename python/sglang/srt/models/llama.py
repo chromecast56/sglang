@@ -311,6 +311,9 @@ class LlamaModel(nn.Module):
                 forward_batch,
                 residual,
             )
+            # if i in self.layers_to_capture:
+            #     aux_hidden_states.append(hidden_states)
+
         hidden_states, _ = self.norm(hidden_states, residual)
 
         if len(aux_hidden_states) == 0:
@@ -413,6 +416,8 @@ class LlamaForCausalLM(nn.Module):
     ) -> LogitsProcessorOutput:
         
         hidden_states, aux_hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
+        
+
 
         # print(f"aux hidden states: {aux_hidden_states[0].shape}")
         if not get_embedding:
