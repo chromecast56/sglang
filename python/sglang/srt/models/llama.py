@@ -135,6 +135,7 @@ class LlamaAttention(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
+
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
             self.head_dim,
@@ -299,11 +300,13 @@ class LlamaModel(nn.Module):
             hidden_states = input_embeds
         residual = None
 
-        aux_hidden_states = []
+        aux_hidden_states = ()
+        # aux_hidden_states = []
         for i in range(len(self.layers)):
+
             if i in self.layers_to_capture:
-                aux_hidden_states.append(hidden_states)
-                
+                aux_hidden_states += (hidden_states,)
+                # aux_hidden_states.append(hidden_states)
             layer = self.layers[i]
             hidden_states, residual = layer(
                 positions,
@@ -311,13 +314,18 @@ class LlamaModel(nn.Module):
                 forward_batch,
                 residual,
             )
+
             # if i in self.layers_to_capture:
             #     aux_hidden_states.append(hidden_states)
 
         hidden_states, _ = self.norm(hidden_states, residual)
 
+        # aux_hidden_states = [hidden_states]
+
+
         if len(aux_hidden_states) == 0:
             return hidden_states, None
+
 
         return hidden_states, aux_hidden_states
 
@@ -415,6 +423,7 @@ class LlamaForCausalLM(nn.Module):
         get_embedding: bool = False,
     ) -> LogitsProcessorOutput:
         
+        # print("input_ids: ", input_ids)
         hidden_states, aux_hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
         
 

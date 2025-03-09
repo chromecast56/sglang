@@ -13,8 +13,12 @@ python -m sglang.launch_server --model-path meta-llama/Llama-2-7b-chat-hf --port
 six python3 -m sglang.launch_server --model meta-llama/Llama-3.1-8B-Instruct --speculative-algo EAGLE3 \
     --speculative-draft jamesliu1/sglang-EAGLE3-Llama-3.1-Instruct-8B --speculative-num-steps 5 \
     --speculative-eagle-topk 8 --speculative-num-draft-tokens 64 \
-    --disable-cuda-graph --mem-fraction 0.7 --dtype float16 --port 30000
+    --disable-cuda-graph --mem-fraction 0.7 --dtype float16 --port 30001
 
+python3 -m sglang.launch_server --model meta-llama/Meta-Llama-3-8B-Instruct --speculative-algorithm EAGLE \
+    --speculative-draft-model-path lmzheng/sglang-EAGLE-LLaMA3-Instruct-8B --speculative-num-steps 5 \
+    --speculative-eagle-topk 8 --speculative-num-draft-tokens 64 --speculative-token-map thunlp/LLaMA3-Instruct-8B-FR-Spec/freq_32768.pt \
+    --disable-cuda-graph --mem-fraction 0.7 --dtype float16 --port 30001
 
 
 six python3 -m sglang.launch_server --model meta-llama/Llama-2-7b-chat-hf --speculative-algo EAGLE \

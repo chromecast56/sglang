@@ -79,7 +79,6 @@ class LlamaDecoderLayer(LlamaDecoderLayer):
             hidden_states, residual = self.hidden_norm(hidden_states, residual)
 
         hidden_states = torch.cat([embeds, hidden_states], dim=-1)
-
         # Self Attention
         hidden_states = self.self_attn(
             positions=positions,
@@ -89,7 +88,11 @@ class LlamaDecoderLayer(LlamaDecoderLayer):
 
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+
+        # print("hidden states before mlp: ", hidden_states)
         hidden_states = self.mlp(hidden_states)
+
+        # print("hidden states after mlp: ", hidden_states)
         return hidden_states, residual
 
 
@@ -124,17 +127,14 @@ class LlamaModel(nn.Module):
             embeds = self.embed_tokens(input_ids)
         else:
             embeds = input_embeds
-            print("BAD")
 
         hidden_states = forward_batch.spec_info.hidden_states
-
-        # print(f"hidden_states: {hidden_states.shape}")
-        # print(f"embeds: {embeds.shape}")
         if hidden_states.shape[-1] != embeds.shape[-1]:
             # print("3fc mode")
             hidden_states = self.fc(hidden_states)
 
         residual = None
+        # print("hidden states after fc: ", hidden_states)
         hidden_states, residual = self.midlayer(
             positions,
             embeds,
@@ -142,9 +142,9 @@ class LlamaModel(nn.Module):
             forward_batch,
             residual,
         )
-
+        
         hidden_states_to_logits, hidden_states_to_aux = self.norm(hidden_states, residual)
-        # return hidden_states_to_logits, None
+
         return hidden_states_to_logits, [hidden_states_to_aux]
 
 
@@ -182,7 +182,9 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         for name, loaded_weight in weights:
             if 'd2t' in name:
+                # d2t stores diffs between draft id and target id
                 self.hot_token_id = loaded_weight + torch.arange(loaded_weight.shape[0])
+                print(f"hot_token_id: {self.hot_token_id}")
 
             if 'd2t' not in name and 't2d' not in name and 'lm_head' not in name:
                 new_name = f"model.{name}"
