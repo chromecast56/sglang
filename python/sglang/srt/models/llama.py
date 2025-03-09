@@ -304,8 +304,7 @@ class LlamaModel(nn.Module):
         for i in range(len(self.layers)):
 
             if i in self.layers_to_capture:
-                aux_hidden_states.append(hidden_states)
-                # aux_hidden_states.append(hidden_states.clone()) # <-- this makes it worse??
+                aux_hidden_states.append(hidden_states + residual)
             layer = self.layers[i]
             hidden_states, residual = layer(
                 positions,
@@ -313,9 +312,6 @@ class LlamaModel(nn.Module):
                 forward_batch,
                 residual,
             )
-
-            # if i in self.layers_to_capture:
-            #     aux_hidden_states.append(hidden_states)
 
         hidden_states, _ = self.norm(hidden_states, residual)
 
