@@ -118,13 +118,13 @@ class EAGLEWorker(TpModelWorker):
             # print(f"head2: {head2.shape}")
             # print(head2)
         else:
-            # Share the embedding and lm_head
-            self.draft_model_runner.model.set_embed_and_head(embed, head)
-
             if self.hot_token_id is not None:
                 head = head.clone()
                 self.hot_token_id = self.hot_token_id.to(head.device)
                 head.data = head.data[self.hot_token_id]
+
+            # Share the embedding and lm_head
+            self.draft_model_runner.model.set_embed_and_head(embed, head)
         
         self.draft_model_runner.server_args.disable_cuda_graph = (
             backup_disable_cuda_graph
