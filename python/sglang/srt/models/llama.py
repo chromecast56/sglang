@@ -300,13 +300,12 @@ class LlamaModel(nn.Module):
             hidden_states = input_embeds
         residual = None
 
-        aux_hidden_states = ()
-        # aux_hidden_states = []
+        aux_hidden_states = []
         for i in range(len(self.layers)):
 
             if i in self.layers_to_capture:
-                aux_hidden_states += (hidden_states,)
-                # aux_hidden_states.append(hidden_states)
+                aux_hidden_states.append(hidden_states)
+                # aux_hidden_states.append(hidden_states.clone()) # <-- this makes it worse??
             layer = self.layers[i]
             hidden_states, residual = layer(
                 positions,
@@ -411,8 +410,6 @@ class LlamaForCausalLM(nn.Module):
             (".gate_up_proj", ".up_proj", 1),
         ]
 
-        self.return_aux_hidden_states = False
-
     @torch.no_grad()
     def forward(
         self,
@@ -425,8 +422,6 @@ class LlamaForCausalLM(nn.Module):
         
         # print("input_ids: ", input_ids)
         hidden_states, aux_hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
-        
-
 
         # print(f"aux hidden states: {aux_hidden_states[0].shape}")
         if not get_embedding:
