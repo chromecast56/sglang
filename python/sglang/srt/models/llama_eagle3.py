@@ -81,13 +81,11 @@ class LlamaDecoderLayer(LlamaDecoderLayer):
             forward_batch=forward_batch,
         )
 
-        # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
 
-        # print("hidden states before mlp: ", hidden_states)
+        # Fully Connected
         hidden_states = self.mlp(hidden_states)
 
-        # print("hidden states after mlp: ", hidden_states)
         return hidden_states, residual
 
 
@@ -125,7 +123,6 @@ class LlamaModel(nn.Module):
 
         hidden_states = forward_batch.spec_info.hidden_states
         if hidden_states.shape[-1] != embeds.shape[-1]:
-            # print("3fc mode")
             hidden_states = self.fc(hidden_states)
 
         residual = None
@@ -140,7 +137,7 @@ class LlamaModel(nn.Module):
         
         hidden_states_to_logits, hidden_states_to_aux = self.norm(hidden_states, residual)
 
-        # For draft decode we capture the hidden state before norm
+        # For draft decode, we capture the hidden state before norm
         return hidden_states_to_logits, [hidden_states_to_aux]
 
 
@@ -180,11 +177,9 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
             if 'd2t' in name:
                 # d2t stores diffs between draft id and target id
                 self.hot_token_id = loaded_weight + torch.arange(loaded_weight.shape[0])
-                print(f"hot_token_id: {self.hot_token_id}")
 
             if 'd2t' not in name and 't2d' not in name and 'lm_head' not in name:
                 new_name = f"model.{name}"
-                print(new_name)
                 super().load_weights([(new_name, loaded_weight)])
             elif 'lm_head' in name:
                 super().load_weights([(name, loaded_weight)])

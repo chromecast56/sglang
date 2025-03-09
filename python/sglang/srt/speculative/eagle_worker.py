@@ -102,21 +102,6 @@ class EAGLEWorker(TpModelWorker):
 
             # grab hot token ids
             self.hot_token_id = self.draft_model_runner.model.get_hot_token_id().to(embed.device)
-
-            # auxiliary hidden capture mode
-            num_layers = self.target_worker.model_runner.model.config.num_hidden_layers
-            layers_to_capture = [2, num_layers // 2, num_layers - 3]
-            self.target_worker.model_runner.model.set_layers_to_capture(layers_to_capture)
-
-            # embed2, head2 = self.draft_model_runner.model.get_embed_and_head()
-            # print(f"embed1: {embed.shape}")
-            # print(embed)
-            # print(f"embed2: {embed2.shape}")
-            # print(embed2)
-            # print(f"head1: {head.shape}")
-            # print(head)
-            # print(f"head2: {head2.shape}")
-            # print(head2)
         else:
             if self.hot_token_id is not None:
                 head = head.clone()
@@ -177,6 +162,7 @@ class EAGLEWorker(TpModelWorker):
 
         if self.server_args.disable_cuda_graph:
             return
+        
 
         tic = time.time()
         logger.info(
@@ -207,17 +193,14 @@ class EAGLEWorker(TpModelWorker):
         """
         assert not batch.spec_algorithm.is_none()
         if batch.forward_mode.is_decode():
-            # print("Start Draft Decode")
             spec_info, to_free_cache_loc = self.draft(batch)
 
-            # print("Start Target Verify")
             logits_output, verify_output, model_worker_batch = self.verify(
                 batch, spec_info
             )
             # Free cache loc (we put it here to avoid synchronization and hide kernel launch overhead.)
             self.token_to_kv_pool_allocator.free(to_free_cache_loc)
 
-            # print("Start Draft KV Refresh")
             # if it is None, means all requests are finished
             if batch.spec_info.verified_id is not None:
                 self.forward_draft_extend_after_decode(batch)
@@ -230,10 +213,7 @@ class EAGLEWorker(TpModelWorker):
             )
 
         else:
-            # print("Start generation")
-            # print("Start Target Prefill")
             logits_output, next_token_ids, bid = self.forward_target_extend(batch)
-            # print("Start Draft Prefill")
             self.forward_draft_extend(
                 batch, logits_output.hidden_states, next_token_ids
             )
@@ -331,9 +311,7 @@ class EAGLEWorker(TpModelWorker):
             spec_info.hidden_states,
         )
         if self.hot_token_id is not None:
-            # print("topk before: ", topk_index.shape)
             topk_index = self.hot_token_id[topk_index]
-            # print("topk after: ", topk_index.shape)
 
         # Return values
         score_list: List[torch.Tensor] = []
@@ -511,8 +489,6 @@ class EAGLEWorker(TpModelWorker):
         forward_batch = ForwardBatch.init_new(
             model_worker_batch, self.draft_model_runner
         )
-
-        # print("hidden states: ", forward_batch.spec_info.hidden_states.shape)
 
         logits_output = self.draft_model_runner.forward(forward_batch)
         self._detect_nan_if_needed(logits_output)

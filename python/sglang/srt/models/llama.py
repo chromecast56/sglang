@@ -300,6 +300,8 @@ class LlamaModel(nn.Module):
             hidden_states = input_embeds
         residual = None
 
+        # self.layers_to_capture = [2, 16, 29]
+
         aux_hidden_states = []
         for i in range(len(self.layers)):
 
@@ -315,12 +317,8 @@ class LlamaModel(nn.Module):
 
         hidden_states, _ = self.norm(hidden_states, residual)
 
-        # aux_hidden_states = [hidden_states]
-
-
         if len(aux_hidden_states) == 0:
             return hidden_states, None
-
 
         return hidden_states, aux_hidden_states
 

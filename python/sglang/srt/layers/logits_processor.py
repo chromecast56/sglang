@@ -226,7 +226,6 @@ class LogitsProcessor(nn.Module):
     ) -> LogitsProcessorOutput:
         if isinstance(logits_metadata, ForwardBatch):
             logits_metadata = LogitsMetadata.from_forward_batch(logits_metadata)
-
         # Get the last hidden states and last logits for the next token prediction
         if (
             logits_metadata.forward_mode.is_decode_or_idle()
@@ -344,8 +343,6 @@ class LogitsProcessor(nn.Module):
                     )
             else:
                 assert False, "Should never reach"
-
-        # print(f"hidden_states_to_store: {hidden_states_to_store.shape}")
 
         if not logits_metadata.extend_return_logprob:
             # Decode mode or extend mode without return_logprob.
