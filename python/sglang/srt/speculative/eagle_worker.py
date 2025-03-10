@@ -73,7 +73,9 @@ class EAGLEWorker(TpModelWorker):
         # Load hot token ids
         if self.speculative_algorithm.is_eagle3():
             if server_args.speculative_token_map is not None:
-                logger.warning("Speculative token map specified, but EAGLE3 models already have this. Ignoring the specified token map.")
+                logger.warning(
+                    "Speculative token map specified, but EAGLE3 models already have this. Ignoring the specified token map."
+                )
             self.hot_token_id = None
         elif server_args.speculative_token_map is not None:
             self.hot_token_id = load_token_map(server_args.speculative_token_map)
@@ -101,7 +103,9 @@ class EAGLEWorker(TpModelWorker):
             self.draft_model_runner.model.set_embed(embed)
 
             # grab hot token ids
-            self.hot_token_id = self.draft_model_runner.model.get_hot_token_id().to(embed.device)
+            self.hot_token_id = self.draft_model_runner.model.get_hot_token_id().to(
+                embed.device
+            )
         else:
             if self.hot_token_id is not None:
                 head = head.clone()
@@ -110,7 +114,7 @@ class EAGLEWorker(TpModelWorker):
 
             # Share the embedding and lm_head
             self.draft_model_runner.model.set_embed_and_head(embed, head)
-        
+
         self.draft_model_runner.server_args.disable_cuda_graph = (
             backup_disable_cuda_graph
         )
@@ -162,7 +166,6 @@ class EAGLEWorker(TpModelWorker):
 
         if self.server_args.disable_cuda_graph:
             return
-        
 
         tic = time.time()
         logger.info(
@@ -194,13 +197,11 @@ class EAGLEWorker(TpModelWorker):
         assert not batch.spec_algorithm.is_none()
         if batch.forward_mode.is_decode():
             spec_info, to_free_cache_loc = self.draft(batch)
-
             logits_output, verify_output, model_worker_batch = self.verify(
                 batch, spec_info
             )
             # Free cache loc (we put it here to avoid synchronization and hide kernel launch overhead.)
             self.token_to_kv_pool_allocator.free(to_free_cache_loc)
-
             # if it is None, means all requests are finished
             if batch.spec_info.verified_id is not None:
                 self.forward_draft_extend_after_decode(batch)
@@ -217,7 +218,6 @@ class EAGLEWorker(TpModelWorker):
             self.forward_draft_extend(
                 batch, logits_output.hidden_states, next_token_ids
             )
-
             return logits_output, next_token_ids, bid, 0
 
     def forward_target_extend(
@@ -347,7 +347,6 @@ class EAGLEWorker(TpModelWorker):
                 forward_batch.input_ids, forward_batch.positions, forward_batch
             )
             self._detect_nan_if_needed(logits_output)
-            # print(logits_output.next_token_logits)
             probs = torch.softmax(logits_output.next_token_logits, dim=-1)
             topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
             if self.hot_token_id is not None:
@@ -489,7 +488,6 @@ class EAGLEWorker(TpModelWorker):
         forward_batch = ForwardBatch.init_new(
             model_worker_batch, self.draft_model_runner
         )
-
         logits_output = self.draft_model_runner.forward(forward_batch)
         self._detect_nan_if_needed(logits_output)
         assert forward_batch.spec_info is batch.spec_info
@@ -516,7 +514,6 @@ class EAGLEWorker(TpModelWorker):
                 raise ValueError("Detected errors during sampling! NaN in the logits.")
 
 
-# thunlp/LLaMA3-Instruct-8B-FR-Spec/freq_32768.pt
 def load_token_map(token_map_path: str) -> List[int]:
     if not os.path.exists(token_map_path):
         cache_dir = snapshot_download(

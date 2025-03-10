@@ -25,16 +25,16 @@ import torch
 from torch import nn
 from transformers import LlamaConfig
 
+from sglang.srt.layers.layernorm import RMSNorm
+from sglang.srt.layers.linear import QKVParallelLinear, RowParallelLinear
 from sglang.srt.layers.logits_processor import LogitsProcessor
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
-from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding,
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.models.llama import LlamaDecoderLayer, LlamaForCausalLM, LlamaAttention
-from sglang.srt.layers.linear import RowParallelLinear, QKVParallelLinear
+from sglang.srt.models.llama import LlamaAttention, LlamaDecoderLayer, LlamaForCausalLM
 
 
 class LlamaDecoderLayer(LlamaDecoderLayer):
@@ -134,8 +134,10 @@ class LlamaModel(nn.Module):
             forward_batch,
             residual,
         )
-        
-        hidden_states_to_logits, hidden_states_to_aux = self.norm(hidden_states, residual)
+
+        hidden_states_to_logits, hidden_states_to_aux = self.norm(
+            hidden_states, residual
+        )
 
         # For draft decode, we capture the hidden state before norm
         return hidden_states_to_logits, [hidden_states_to_aux]
@@ -174,16 +176,15 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         for name, loaded_weight in weights:
-            if 'd2t' in name:
+            if "d2t" in name:
                 # d2t stores diffs between draft id and target id
                 self.hot_token_id = loaded_weight + torch.arange(loaded_weight.shape[0])
 
-            if 'd2t' not in name and 't2d' not in name and 'lm_head' not in name:
+            if "d2t" not in name and "t2d" not in name and "lm_head" not in name:
                 new_name = f"model.{name}"
                 super().load_weights([(new_name, loaded_weight)])
-            elif 'lm_head' in name:
+            elif "lm_head" in name:
                 super().load_weights([(name, loaded_weight)])
-
 
     def get_hot_token_id(self):
         return self.hot_token_id

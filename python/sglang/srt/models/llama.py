@@ -17,7 +17,7 @@
 """Inference-only LLaMA model compatible with HuggingFace weights."""
 
 import logging
-from typing import Any, Dict, Iterable, Optional, Tuple, List, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -134,7 +134,6 @@ class LlamaAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
-
 
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
@@ -287,6 +286,7 @@ class LlamaModel(nn.Module):
 
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.layers_to_capture = []
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -299,12 +299,8 @@ class LlamaModel(nn.Module):
         else:
             hidden_states = input_embeds
         residual = None
-
-        # self.layers_to_capture = [2, 16, 29]
-
         aux_hidden_states = []
         for i in range(len(self.layers)):
-
             if i in self.layers_to_capture:
                 aux_hidden_states.append(hidden_states + residual)
             layer = self.layers[i]
@@ -413,11 +409,10 @@ class LlamaForCausalLM(nn.Module):
         input_embeds: torch.Tensor = None,
         get_embedding: bool = False,
     ) -> LogitsProcessorOutput:
-        
-        # print("input_ids: ", input_ids)
-        hidden_states, aux_hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
+        hidden_states, aux_hidden_states = self.model(
+            input_ids, positions, forward_batch, input_embeds
+        )
 
-        # print(f"aux hidden states: {aux_hidden_states[0].shape}")
         if not get_embedding:
             return self.logits_processor(
                 input_ids, hidden_states, aux_hidden_states, self.lm_head, forward_batch
@@ -605,7 +600,7 @@ class LlamaForCausalLM(nn.Module):
 
     def get_embed(self):
         return self.model.embed_tokens.weight
-    
+
     def set_embed(self, embed):
         del self.model.embed_tokens.weight
         self.model.embed_tokens.weight = embed
@@ -617,6 +612,7 @@ class LlamaForCausalLM(nn.Module):
 
     def set_layers_to_capture(self, layers_to_capture: List[int]):
         self.model.layers_to_capture = layers_to_capture
+
 
 class Phi3ForCausalLM(LlamaForCausalLM):
     pass
