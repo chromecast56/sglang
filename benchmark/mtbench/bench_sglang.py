@@ -4,7 +4,6 @@ import os
 import time
 import uuid
 
-import time
 import requests
 
 import sglang as sgl
@@ -41,7 +40,9 @@ def write_answers(filename, model_id, questions, answers):
 
 @sgl.function
 def answer_mt_bench(s, question_1, question_2):
-    s += sgl.system("You are a helpful assistant.")
+    # s += sgl.system("You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.")
+    # s += sgl.system("You are a helpful assistant.")
+    s += sgl.system("")
     s += sgl.user(question_1)
     s += sgl.assistant(sgl.gen("answer_1"))
     s += sgl.user(question_2)
@@ -73,7 +74,9 @@ def main(args):
 
     latency = time.time() - tic
     num_output_tokens = sum(
-        s.get_meta_info("answer_1")["completion_tokens"] + s.get_meta_info("answer_2")["completion_tokens"] for s in rets
+        s.get_meta_info("answer_1")["completion_tokens"]
+        + s.get_meta_info("answer_2")["completion_tokens"]
+        for s in rets
     )
 
     # NOTE: acceptance length is just completion_tokens / spec_verify_ct
@@ -84,13 +87,19 @@ def main(args):
 
     has_verify = "spec_verify_ct" in rets[0].get_meta_info("answer_1")
     if has_verify:
-        num_verify_tokens = sum(s.get_meta_info("answer_1")["spec_verify_ct"] + s.get_meta_info("answer_2")["spec_verify_ct"] for s in rets)
+        num_verify_tokens = sum(
+            s.get_meta_info("answer_1")["spec_verify_ct"]
+            + s.get_meta_info("answer_2")["spec_verify_ct"]
+            for s in rets
+        )
 
         accept_length = num_output_tokens / num_verify_tokens
     else:
         accept_length = 1.0
 
-    print(f"#questions: {len(questions)}, Throughput: {output_throughput:.2f} token/s, Acceptance length: {accept_length:.2f}")
+    print(
+        f"#questions: {len(questions)}, Throughput: {output_throughput:.2f} token/s, Acceptance length: {accept_length:.2f}"
+    )
 
     # Write results
     model_id = backend.model_info["model_path"]
@@ -112,7 +121,6 @@ def main(args):
             },
         }
         fout.write(json.dumps(value) + "\n")
-
 
 
 if __name__ == "__main__":

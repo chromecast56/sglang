@@ -4,6 +4,7 @@ import os
 import time
 import uuid
 from collections import defaultdict
+
 from tabulate import tabulate
 
 import sglang as sgl
@@ -18,18 +19,18 @@ def load_questions(filename, category=None, max_turns=None):
     with open(filename, "r") as fin:
         for line in fin:
             obj = json.loads(line)
-            
+
             # Filter by category if specified
             if category and obj.get("category") != category:
                 continue
-                
+
             # Clone the object to avoid modifying the original
             question = obj.copy()
-            
+
             # Limit number of turns if specified
             if max_turns is not None:
                 question["turns"] = question["turns"][:max_turns]
-                
+
             questions.append(question)
     return questions
 
@@ -52,7 +53,7 @@ def write_answers(filename, model_id, questions, answers):
 
 @sgl.function
 def answer_spec_bench_single(s, question_1):
-    s += sgl.system("You are a helpful assistant.")
+    s += sgl.system("")
     # print("After system message:\n", s.text())
     s += sgl.user(question_1)
     s += sgl.assistant(sgl.gen("answer_1"))
@@ -60,7 +61,7 @@ def answer_spec_bench_single(s, question_1):
 
 @sgl.function
 def answer_spec_bench_double(s, question_1, question_2):
-    s += sgl.system("You are a helpful assistant.")
+    s += sgl.system("")
     s += sgl.user(question_1)
     s += sgl.assistant(sgl.gen("answer_1"))
     s += sgl.user(question_2)
@@ -72,129 +73,161 @@ def main(args):
     questions = load_questions(args.question_file, args.category, args.max_turns)
     if args.num_questions != -1:
         questions = questions[: args.num_questions]
-    
+
     if not questions:
         print(f"No questions found with the specified filters.")
         return
-    
+
+    # Group questions by category
+    questions_by_category = defaultdict(list)
+    for question in questions:
+        category = question.get("category", "unknown")
+        questions_by_category[category].append(question)
+
     # Determine if we're using single or double turns
     max_turns = args.max_turns if args.max_turns is not None else 2
     use_single_turn = max_turns == 1
-    
-    if use_single_turn:
-        arguments = [
-            {"question_1": q["turns"][0]} for q in questions
-        ]
-        answer_func = answer_spec_bench_single
-    else:
-        arguments = [
-            {"question_1": q["turns"][0], "question_2": q["turns"][1] if len(q["turns"]) > 1 else ""} 
-            for q in questions
-        ]
-        answer_func = answer_spec_bench_double
 
     # Select backend
     backend = select_sglang_backend(args)
     sgl.set_default_backend(backend)
 
-    # Run requests
-    tic = time.time()
-    rets = answer_func.run_batch(
-        arguments,
-        temperature=0,
-        max_new_tokens=args.max_new_tokens,
-        num_threads=args.parallel,
-        progress_bar=True,
-    )
-    
-    if use_single_turn:
-        answers = [[s["answer_1"]] for s in rets]
-    else:
-        answers = [[s["answer_1"], s["answer_2"]] for s in rets]
-
-    latency = time.time() - tic
-    
-    # Group questions and answers by category
-    results_by_category = defaultdict(list)
-    for i, question in enumerate(questions):
-        category = question.get("category", "unknown")
-        results_by_category[category].append((question, rets[i]))
-    
-    # Compute metrics per category
+    # Process each category separately
+    all_answers = []
     metrics_by_category = {}
     total_output_tokens = 0
     total_verify_tokens = 0
-    
-    for category, category_results in results_by_category.items():
-        category_questions = [r[0] for r in category_results]
-        category_rets = [r[1] for r in category_results]
-        
+    total_latency = 0
+
+    for category, category_questions in questions_by_category.items():
+        print(f"Processing category: {category} ({len(category_questions)} questions)")
+
+        # Prepare arguments for this category
         if use_single_turn:
-            category_output_tokens = sum(s.get_meta_info("answer_1")["completion_tokens"] for s in category_rets)
-            has_verify = "spec_verify_ct" in category_rets[0].get_meta_info("answer_1")
-            if has_verify:
-                category_verify_tokens = sum(s.get_meta_info("answer_1")["spec_verify_ct"] for s in category_rets)
-            else:
-                category_verify_tokens = category_output_tokens
+            arguments = [{"question_1": q["turns"][0]} for q in category_questions]
+            answer_func = answer_spec_bench_single
         else:
+            arguments = [
+                {
+                    "question_1": q["turns"][0],
+                    "question_2": q["turns"][1] if len(q["turns"]) > 1 else "",
+                }
+                for q in category_questions
+            ]
+            answer_func = answer_spec_bench_double
+
+        # Run requests for this category
+        tic = time.time()
+        category_rets = answer_func.run_batch(
+            arguments,
+            temperature=0,
+            max_new_tokens=args.max_new_tokens,
+            num_threads=args.parallel,
+            progress_bar=True,
+        )
+        category_latency = time.time() - tic
+        total_latency += category_latency
+
+        # Process results for this category
+        if use_single_turn:
+            category_answers = [[s["answer_1"]] for s in category_rets]
+        else:
+            category_answers = [[s["answer_1"], s["answer_2"]] for s in category_rets]
+
+        all_answers.extend(category_answers)
+
+        # Calculate metrics for this category
+        if use_single_turn:
             category_output_tokens = sum(
-                s.get_meta_info("answer_1")["completion_tokens"] + 
-                s.get_meta_info("answer_2")["completion_tokens"] for s in category_rets
+                s.get_meta_info("answer_1")["completion_tokens"] for s in category_rets
             )
             has_verify = "spec_verify_ct" in category_rets[0].get_meta_info("answer_1")
             if has_verify:
                 category_verify_tokens = sum(
-                    s.get_meta_info("answer_1")["spec_verify_ct"] + 
-                    s.get_meta_info("answer_2")["spec_verify_ct"] for s in category_rets
+                    s.get_meta_info("answer_1")["spec_verify_ct"] for s in category_rets
                 )
             else:
                 category_verify_tokens = category_output_tokens
-        
-        category_latency = latency * (len(category_results) / len(questions))
-        category_throughput = category_output_tokens / category_latency if category_latency > 0 else 0
-        category_accept_length = category_output_tokens / category_verify_tokens if category_verify_tokens > 0 else 1.0
-        
+        else:
+            category_output_tokens = sum(
+                s.get_meta_info("answer_1")["completion_tokens"]
+                + s.get_meta_info("answer_2")["completion_tokens"]
+                for s in category_rets
+            )
+            has_verify = "spec_verify_ct" in category_rets[0].get_meta_info("answer_1")
+            if has_verify:
+                category_verify_tokens = sum(
+                    s.get_meta_info("answer_1")["spec_verify_ct"]
+                    + s.get_meta_info("answer_2")["spec_verify_ct"]
+                    for s in category_rets
+                )
+            else:
+                category_verify_tokens = category_output_tokens
+
+        category_throughput = (
+            category_output_tokens / category_latency if category_latency > 0 else 0
+        )
+        category_accept_length = (
+            category_output_tokens / category_verify_tokens
+            if category_verify_tokens > 0
+            else 1.0
+        )
+
         metrics_by_category[category] = {
-            "num_questions": len(category_results),
+            "num_questions": len(category_questions),
             "throughput": category_throughput,
             "accept_length": category_accept_length,
             "output_tokens": category_output_tokens,
+            "latency": category_latency,
         }
-        
+
         total_output_tokens += category_output_tokens
         total_verify_tokens += category_verify_tokens
-    
+
     # Calculate overall metrics
-    overall_throughput = total_output_tokens / latency if latency > 0 else 0
-    overall_accept_length = total_output_tokens / total_verify_tokens if total_verify_tokens > 0 else 1.0
-    
+    overall_throughput = total_output_tokens / total_latency if total_latency > 0 else 0
+    overall_accept_length = (
+        total_output_tokens / total_verify_tokens if total_verify_tokens > 0 else 1.0
+    )
+
     # Display summary table
     table_data = []
-    headers = ["Category", "Questions", "Throughput (token/s)", "Accept Length"]
-    
+    headers = [
+        "Category",
+        "Questions",
+        "Latency (s)",
+        "Throughput (token/s)",
+        "Accept Length",
+    ]
+
     for category, metrics in sorted(metrics_by_category.items()):
-        table_data.append([
-            category,
-            metrics["num_questions"],
-            f"{metrics['throughput']:.2f}",
-            f"{metrics['accept_length']:.2f}"
-        ])
-    
+        table_data.append(
+            [
+                category,
+                metrics["num_questions"],
+                f"{metrics['latency']:.2f}",
+                f"{metrics['throughput']:.2f}",
+                f"{metrics['accept_length']:.2f}",
+            ]
+        )
+
     # Add total row
-    table_data.append([
-        "TOTAL",
-        len(questions),
-        f"{overall_throughput:.2f}",
-        f"{overall_accept_length:.2f}"
-    ])
-    
+    table_data.append(
+        [
+            "TOTAL",
+            len(questions),
+            f"{total_latency:.2f}",
+            f"{overall_throughput:.2f}",
+            f"{overall_accept_length:.2f}",
+        ]
+    )
+
     print(tabulate(table_data, headers=headers, tablefmt="grid"))
-    print(f"\nTotal latency: {latency:.2f} seconds")
-    
+
     # Write results
     model_id = backend.model_info["model_path"]
     answer_file = args.answer_file or f"tmp_output_specbench_{args.backend}.txt"
-    write_answers(answer_file, model_id, questions, answers)
+    write_answers(answer_file, model_id, questions, all_answers)
 
     with open(args.result_file, "a") as fout:
         # Overall metrics
@@ -202,7 +235,7 @@ def main(args):
             "task": "specbench",
             "backend": args.backend,
             "num_gpus": 1,
-            "latency": round(latency, 3),
+            "latency": round(total_latency, 3),
             "throughput": round(overall_throughput, 3),
             "accept_length": round(overall_accept_length, 3),
             "num_requests": len(questions),
@@ -213,7 +246,7 @@ def main(args):
             },
         }
         fout.write(json.dumps(value) + "\n")
-        
+
         # Per-category metrics
         for category, metrics in metrics_by_category.items():
             category_value = {
@@ -221,6 +254,7 @@ def main(args):
                 "category": category,
                 "backend": args.backend,
                 "num_gpus": 1,
+                "latency": round(metrics["latency"], 3),
                 "throughput": round(metrics["throughput"], 3),
                 "accept_length": round(metrics["accept_length"], 3),
                 "num_requests": metrics["num_questions"],
@@ -242,8 +276,20 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=30000)
     parser.add_argument("--backend", type=str, default="srt")
     parser.add_argument("--result-file", type=str, default="result.jsonl")
-    parser.add_argument("--category", type=str, default=None, help="Filter questions by category")
-    parser.add_argument("--max-turns", type=int, default=1, help="Maximum number of turns (1 for first turn only)")
-    parser.add_argument("--max-new-tokens", type=int, default=2048, help="Maximum number of new tokens to generate")
+    parser.add_argument(
+        "--category", type=str, default=None, help="Filter questions by category"
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=2,
+        help="Maximum number of turns (1 for first turn only)",
+    )
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=1024,
+        help="Maximum number of new tokens to generate",
+    )
     args = parser.parse_args()
     main(args)
