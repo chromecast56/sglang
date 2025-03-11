@@ -6,9 +6,8 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
-from torch.nn.parameter import Parameter, UninitializedParameter
-
 from torch.nn import Linear
+from torch.nn.parameter import Parameter, UninitializedParameter
 
 from sglang.srt.distributed import (
     divide,
@@ -171,11 +170,6 @@ class UnquantizedLinearMethod(LinearMethodBase):
     ) -> torch.Tensor:
 
         return F.linear(x, layer.weight, bias)
-    
-
-
-
-
 
 
 class LinearBase(torch.nn.Module):
@@ -298,47 +292,10 @@ class ReplicatedLinear(LinearBase):
         s += f", bias={self.bias is not None}"
         return s
 
-torch_compile_kwargs = {
-    "backend": "inductor",
-    "fullgraph": True,
-    # "mode": "reduce-overhead",
-    # "mode": "max-autotune-no-cudagraphs",
-    
-    "options": {
-        "max_autotune": True,
-        "epilogue_fusion": True,
-        "coordinate_descent_tuning": True,
-        "coordinate_descent_check_all_directions": True,
-        "coordinate_descent_search_radius": 2,
-    },
-    "dynamic": False,
-}
-
-
-# merged is for autoregressive testing
-# def merged(X, W_lora_A, lora_B, 
-#             N: int):
-#     y = X @ W_lora_A.T # [M, N + r]
-
-
-#     # testing
-#     return y[:, :N] + y[:, N:] @ lora_B.T
-#     # return y[:, :N].contiguous()
 
 from torch import Tensor
 
-# for prefill
-# def base_only(X, W_lora_A, lora_B):
-#     """
-#     X: [M, K]
-#     W_lora_A: [r, K]
-#     lora_B: [N, r]
-#     return: [M, N]
-#     """
 
-#     # print("base only")
-#     W = W_lora_A[:-lora_B.shape[1]]
-#     return X @ W.T
 def base_only(X, W_lora_A, lora_B):
     """
     X: [M, K]
@@ -348,8 +305,9 @@ def base_only(X, W_lora_A, lora_B):
     """
 
     # print("base only")
-    W = W_lora_A[:-lora_B.shape[1]]
+    W = W_lora_A[: -lora_B.shape[1]]
     return X @ W.T
+
 
 def lora_only(X, W_lora_A, lora_B):
     """
@@ -360,11 +318,27 @@ def lora_only(X, W_lora_A, lora_B):
     """
 
     # print("lora only")
-    y = X @ W_lora_A.T # [M, N + r]
+    y = X @ W_lora_A.T  # [M, N + r]
 
-    return y[:, :lora_B.shape[0]] + y[:, lora_B.shape[0]:] @ lora_B.T
+    return y[:, : lora_B.shape[0]] + y[:, lora_B.shape[0] :] @ lora_B.T
 
 
+lora_compile_kwargs = {
+    "backend": "inductor",
+    "fullgraph": True,
+    "options": {
+        "max_autotune": True,
+        "epilogue_fusion": True,
+        "coordinate_descent_tuning": True,
+        "coordinate_descent_check_all_directions": True,
+        "coordinate_descent_search_radius": 2,
+        "emulate_precision_casts": False,  # Disable for this specific function
+    },
+    "dynamic": False,
+}
+
+
+# @torch.compile(**lora_compile_kwargs)
 def base_and_lora(X, W_lora_A, lora_B):
     """
     X: [M, K]
@@ -379,24 +353,26 @@ def base_and_lora(X, W_lora_A, lora_B):
 
     # y[y.shape[0]//2:] += (X[y.shape[0]//2:] @ A.T) @ lora_B.T
     # return y
-    
+
     # NOTE: No-op testing
     # return X @ W_lora_A.T[:, :lora_B.shape[0]].contiguous()
 
-    y = X @ W_lora_A.T # [M, N + r]
+    y = X @ W_lora_A.T  # [M, N + r]
 
-    y[:X.shape[0]//2, lora_B.shape[0]:] = 0 # zero out lora part for client 1
+    y[: X.shape[0] // 2, lora_B.shape[0] :] = 0  # zero out lora part for client 1
 
-    return y[:, :lora_B.shape[0]] + y[:, lora_B.shape[0]:] @ lora_B.T
+    return y[:, : lora_B.shape[0]] + y[:, lora_B.shape[0] :] @ lora_B.T
+
 
 class LoRALinear(LinearBase):
     """Linear layer with LoRA.
-    
+
     This version keeps B_proj separate but fuses W_proj and A_proj into a single
     parameter W_A_proj. The fused parameter has shape (output_size + lora_rank, input_size).
-    
+
     W_proj corresponds to the top part and A_proj to the bottom part.
     """
+
     def __init__(
         self,
         input_size: int,
@@ -411,34 +387,43 @@ class LoRALinear(LinearBase):
         if quant_config is not None:
             raise NotImplementedError("quant_config not supported for LoRALinear yet")
         if get_tensor_model_parallel_world_size() > 1:
-            raise NotImplementedError("Tensor parallel not supported for LoRALinear yet")
+            raise NotImplementedError(
+                "Tensor parallel not supported for LoRALinear yet"
+            )
         super().__init__(
             input_size, output_size, skip_bias_add, params_dtype, quant_config, prefix
         )
-        
-        self.output_size = output_size  # number of rows for the base projection (W_proj)
+
+        self.output_size = (
+            output_size  # number of rows for the base projection (W_proj)
+        )
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
-        
+
         # Create a fused parameter for W_proj (base weight) and A_proj (LoRA's low-rank factor).
         # The effective shape is (output_size + lora_rank, input_size).
-        self.W_A = Linear(self.input_size, self.output_size + self.lora_rank, bias=False, dtype=self.params_dtype)
-        
-        
+        self.W_A = Linear(
+            self.input_size,
+            self.output_size + self.lora_rank,
+            bias=False,
+            dtype=self.params_dtype,
+        )
+
         # B_proj remains a separate parameter.
-        self.B = Linear(self.lora_rank, self.output_size, bias=False, dtype=self.params_dtype)
+        self.B = Linear(
+            self.lora_rank, self.output_size, bias=False, dtype=self.params_dtype
+        )
         self.B.weight.data = torch.zeros_like(self.B.weight.data)
 
         set_weight_attrs(self.W_A.weight, {"weight_loader": self.weight_loader})
         set_weight_attrs(self.B.weight, {"weight_loader": self.weight_loader})
 
-        
     def apply_alpha(self, tensor, rank=None):
         if rank is None:
             rank = self.lora_rank
 
         return tensor * ((self.lora_alpha / rank) ** 0.5)
- 
+
     def forward(self, input_, forward_batch):
         # return base_and_lora(input_, self.W_A.weight.data, self.B.weight.data)
         # return base_only(input_, self.W_A.weight.data, self.B.weight.data)
@@ -446,7 +431,7 @@ class LoRALinear(LinearBase):
             return base_and_lora(input_, self.W_A.weight.data, self.B.weight.data)
         else:
             return base_only(input_, self.W_A.weight.data, self.B.weight.data)
-    
+
     def weight_loader(
         self,
         param: Parameter,
@@ -455,11 +440,11 @@ class LoRALinear(LinearBase):
     ):
         """
         A custom weight loader that supports loading W and A separately into a fused parameter.
-        
+
         If loaded_shard_id is None or "W_A", we assume that loaded_weight is already
         a fused weight tensor with shape (output_size + lora_rank, input_size) and
         copy it directly into W_A_proj.
-        
+
         Otherwise:
           - If loaded_shard_id is "W", copy loaded_weight into the upper part corresponding to W_proj.
           - If loaded_shard_id is "A", copy loaded_weight into the lower part corresponding to A_proj.
@@ -467,10 +452,10 @@ class LoRALinear(LinearBase):
         """
         if loaded_shard_id == "W":
             # Load the base projection, which occupies the first w_proj_size rows.
-            param.data[:self.output_size].copy_(loaded_weight)
+            param.data[: self.output_size].copy_(loaded_weight)
         elif loaded_shard_id == "A":
             # Load the low-rank factor A_proj into the lower part of W_A_proj.
-            param.data[self.output_size:].copy_(self.apply_alpha(loaded_weight))
+            param.data[self.output_size :].copy_(self.apply_alpha(loaded_weight))
         elif loaded_shard_id == "B":
             # Load the B_proj weight.
             # print(param.data.shape, loaded_weight.shape)
@@ -479,10 +464,9 @@ class LoRALinear(LinearBase):
             raise ValueError(f"Unknown loaded_shard_id: {loaded_shard_id}")
 
 
-
 class LoRAGateUpLinear(LoRALinear):
     """
-# NOTE: scuffed 2x rank implementation -- need to fix in train
+    # NOTE: scuffed 2x rank implementation -- need to fix in train
 
     """
 
@@ -503,12 +487,11 @@ class LoRAGateUpLinear(LoRALinear):
             skip_bias_add=skip_bias_add,
             params_dtype=params_dtype,
             prefix=prefix,
-            lora_rank=2*lora_rank,
+            lora_rank=2 * lora_rank,
             lora_alpha=lora_alpha,
         )
         self.intermediate_size = intermediate_size
         self.r = lora_rank
-
 
     def weight_loader(
         self,
@@ -520,7 +503,7 @@ class LoRAGateUpLinear(LoRALinear):
         Custom weight loader for LoRAGateUp.
 
         The `loaded_shard_id` determines which sub-parameter of this layer will be loaded:
-        
+
           - "gate_base": load into the top half of W_base.
           - "up_base": load into the bottom half of W_base.
           - "gate_lora_A": load into gate_lora_A.
@@ -530,50 +513,74 @@ class LoRAGateUpLinear(LoRALinear):
         """
         if loaded_shard_id == "gate_base":
             expected_shape = self.W_A.weight.data[: self.intermediate_size].shape
-            assert loaded_weight.shape == expected_shape, (
-                f"Shape mismatch for gate_base: expected {expected_shape}, got {loaded_weight.shape}"
-            )
+            assert (
+                loaded_weight.shape == expected_shape
+            ), f"Shape mismatch for gate_base: expected {expected_shape}, got {loaded_weight.shape}"
             param.data[: self.intermediate_size].copy_(loaded_weight)
 
         elif loaded_shard_id == "up_base":
-            expected_shape = self.W_A.weight.data[self.intermediate_size : 2 * self.intermediate_size].shape
-            assert loaded_weight.shape == expected_shape, (
-                f"Shape mismatch for up_base: expected {expected_shape}, got {loaded_weight.shape}"
+            expected_shape = self.W_A.weight.data[
+                self.intermediate_size : 2 * self.intermediate_size
+            ].shape
+            assert (
+                loaded_weight.shape == expected_shape
+            ), f"Shape mismatch for up_base: expected {expected_shape}, got {loaded_weight.shape}"
+            param.data[self.intermediate_size : 2 * self.intermediate_size].copy_(
+                loaded_weight
             )
-            param.data[self.intermediate_size : 2 * self.intermediate_size].copy_(loaded_weight)
 
         elif loaded_shard_id == "gate_lora_A":
-            expected_shape = self.W_A.weight.data[2 * self.intermediate_size : 2 * self.intermediate_size + self.r].shape
-            assert loaded_weight.shape == expected_shape, (
-                f"Shape mismatch for gate_lora_A: expected {expected_shape}, got {loaded_weight.shape}"
-            )
-            param.data[2 * self.intermediate_size : 2 * self.intermediate_size + self.r].copy_(self.apply_alpha(loaded_weight, self.r)) # NOTE: temp fix...
+            expected_shape = self.W_A.weight.data[
+                2 * self.intermediate_size : 2 * self.intermediate_size + self.r
+            ].shape
+            assert (
+                loaded_weight.shape == expected_shape
+            ), f"Shape mismatch for gate_lora_A: expected {expected_shape}, got {loaded_weight.shape}"
+            param.data[
+                2 * self.intermediate_size : 2 * self.intermediate_size + self.r
+            ].copy_(
+                self.apply_alpha(loaded_weight, self.r)
+            )  # NOTE: temp fix...
         elif loaded_shard_id == "up_lora_A":
-            expected_shape = self.W_A.weight.data[2 * self.intermediate_size + self.r :].shape
-            assert loaded_weight.shape == expected_shape, (
-                f"Shape mismatch for up_lora_A: expected {expected_shape}, got {loaded_weight.shape}"
+            expected_shape = self.W_A.weight.data[
+                2 * self.intermediate_size + self.r :
+            ].shape
+            assert (
+                loaded_weight.shape == expected_shape
+            ), f"Shape mismatch for up_lora_A: expected {expected_shape}, got {loaded_weight.shape}"
+            param.data[2 * self.intermediate_size + self.r :].copy_(
+                self.apply_alpha(loaded_weight, self.r)
             )
-            param.data[2 * self.intermediate_size + self.r :].copy_(self.apply_alpha(loaded_weight, self.r))
         elif loaded_shard_id == "gate_lora_B":
-            expected_shape = self.B.weight.data[: self.intermediate_size, : self.r].shape
-            assert loaded_weight.shape == expected_shape, (
-                f"Shape mismatch for gate_lora_B: expected {expected_shape}, got {loaded_weight.shape}"
+            expected_shape = self.B.weight.data[
+                : self.intermediate_size, : self.r
+            ].shape
+            assert (
+                loaded_weight.shape == expected_shape
+            ), f"Shape mismatch for gate_lora_B: expected {expected_shape}, got {loaded_weight.shape}"
+            param.data[: self.intermediate_size, : self.r].copy_(
+                self.apply_alpha(loaded_weight, self.r)
             )
-            param.data[:self.intermediate_size, :self.r].copy_(self.apply_alpha(loaded_weight, self.r))
 
         elif loaded_shard_id == "up_lora_B":
-            expected_shape = self.B.weight.data[self.intermediate_size :, self.r :].shape
-            assert loaded_weight.shape == expected_shape, (
-                f"Shape mismatch for up_lora_B: expected {expected_shape}, got {loaded_weight.shape}"
+            expected_shape = self.B.weight.data[
+                self.intermediate_size :, self.r :
+            ].shape
+            assert (
+                loaded_weight.shape == expected_shape
+            ), f"Shape mismatch for up_lora_B: expected {expected_shape}, got {loaded_weight.shape}"
+            param.data[self.intermediate_size :, self.r :].copy_(
+                self.apply_alpha(loaded_weight, self.r)
             )
-            param.data[self.intermediate_size:, self.r:].copy_(self.apply_alpha(loaded_weight, self.r))
         else:
             raise ValueError(f"Unknown loaded_shard_id: {loaded_shard_id}")
+
 
 class LoRAQKVLinear(LoRALinear):
     """
     Linear layer with LoRA for QKV projections.
     """
+
     def __init__(
         self,
         input_size: int,
@@ -607,19 +614,28 @@ class LoRAQKVLinear(LoRALinear):
         loaded_shard_id: Optional[str] = None,
     ):
         if loaded_shard_id == "q_base":
-            param.data[:self.query_size].copy_(loaded_weight)
+            param.data[: self.query_size].copy_(loaded_weight)
         elif loaded_shard_id == "k_base":
-            param.data[self.query_size:self.query_size+self.keyvalue_size].copy_(loaded_weight)
+            param.data[self.query_size : self.query_size + self.keyvalue_size].copy_(
+                loaded_weight
+            )
         elif loaded_shard_id == "v_base":
-            param.data[self.query_size+self.keyvalue_size:self.query_size+2*self.keyvalue_size].copy_(loaded_weight)
+            param.data[
+                self.query_size
+                + self.keyvalue_size : self.query_size
+                + 2 * self.keyvalue_size
+            ].copy_(loaded_weight)
         elif loaded_shard_id == "q_lora_A":
-            param.data[self.query_size+2*self.keyvalue_size:].copy_(self.apply_alpha(loaded_weight))
+            param.data[self.query_size + 2 * self.keyvalue_size :].copy_(
+                self.apply_alpha(loaded_weight)
+            )
         elif loaded_shard_id == "q_lora_B":
-            param.data[:self.query_size,:].copy_(self.apply_alpha(loaded_weight))
-            assert param.data[self.query_size:].sum() == 0
+            param.data[: self.query_size, :].copy_(self.apply_alpha(loaded_weight))
+            assert param.data[self.query_size :].sum() == 0
         else:
             return
             # print(f"Assuming that {loaded_shard_id} is zero")
+
 
 class ColumnParallelLinear(LinearBase):
     """Linear layer with column parallelism.

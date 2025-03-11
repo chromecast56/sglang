@@ -5,29 +5,30 @@ into two separate models that are Llama-style.
 Usage:
 python axolotl_to_sglang.py \
          --model_name meta-llama/Meta-Llama-3.1-8B-Instruct \
-         --merged_model_dir /data/jamesliu/models/models--togethercomputer--phoenix-pretrain-1layer-10epochs-no-lora-lr-1e-4-tulu/snapshots/e3467052a5d55cb821b910527c358577a11d54f3/checkpoint-51560 \
+         --merged_model_dir /data/jamesliu/models/models--togethercomputer--phoenix-pretrain-1layer-5epochs-no-lora-on-policy-tulu/snapshots/e3f72848b0f660f86c3bf31907b4a32f0a434592 \
          --base_model_dir /data/jamesliu/sglang/tulu/llama-3.1-instruct-phoenix_1layer_baseline/base_model \
          --phoenix_model_dir /data/jamesliu/sglang/tulu/llama-3.1-instruct-phoenix_1layer_baseline/phoenix_model --phoenix_num_layers 1
 
 For LoRA:
 python axolotl_to_sglang.py \
          --model_name meta-llama/Meta-Llama-3.1-8B-Instruct \
-         --merged_model_dir /data/jamesliu/models/models--togethercomputer--phoenix-pretrain-1layer-10epochs-lora-target-rank64-lr-1e-4-tulu/snapshots/9c29891108cfe71481f3872e47f2f3f1eaed7587/checkpoint-51560 \
+         --merged_model_dir /data/jamesliu/models/models--togethercomputer--phoenix-pretrain-1layer-5epochs-lora-target-rank64-lr-1e-4-on-policy-tulu-from-fully-pretrained/snapshots/2731d6ba73d8386b04fb98408f9dccddd019adac \
          --base_model_dir /data/jamesliu/sglang/tulu/llama-3.1-instruct-phoenix_1layer_lora/base_model \
          --phoenix_model_dir /data/jamesliu/sglang/tulu/llama-3.1-instruct-phoenix_1layer_lora/phoenix_model --phoenix_num_layers 1 --lora_rank 64 --lora_alpha 128
 
-         
+
 For example, if you trained togethercomputer/phoenix-1layer-baseline, point
 --merged_model_dir to the checkpoint (e.g. checkpoint-93225).
 """
 
-import os
-import glob
 import argparse
+import glob
+import os
 
 import torch
 import torch.nn as nn
 from transformers import AutoConfig, LlamaForCausalLM, PretrainedConfig
+
 
 def get_original_modules(layer):
     return [
@@ -41,7 +42,6 @@ def get_original_modules(layer):
     ]
 
 
-
 class LoRAModule(nn.Module):
     def __init__(self, output_size, input_size, lora_rank):
         super().__init__()
@@ -49,6 +49,7 @@ class LoRAModule(nn.Module):
         self.base_layer = nn.Linear(input_size, output_size, bias=False)
         self.lora_A = nn.Linear(input_size, lora_rank, bias=False)
         self.lora_B = nn.Linear(lora_rank, output_size, bias=False)
+
 
 class LlamaForCausalLMLoRA(LlamaForCausalLM):
     def __init__(
@@ -62,13 +63,36 @@ class LlamaForCausalLMLoRA(LlamaForCausalLM):
             for module in get_original_modules(layer):
                 del module
 
-            layer.self_attn.q_proj = LoRAModule(config.head_dim*config.num_attention_heads, config.hidden_size, lora_rank)
-            layer.self_attn.k_proj = LoRAModule(config.head_dim*config.num_key_value_heads, config.hidden_size, lora_rank)
-            layer.self_attn.v_proj = LoRAModule(config.head_dim*config.num_key_value_heads, config.hidden_size, lora_rank)
-            layer.self_attn.o_proj = LoRAModule(config.hidden_size, config.head_dim*config.num_attention_heads, lora_rank)
-            layer.mlp.gate_proj = LoRAModule(config.intermediate_size, config.hidden_size, lora_rank)
-            layer.mlp.up_proj = LoRAModule(config.intermediate_size, config.hidden_size, lora_rank)
-            layer.mlp.down_proj = LoRAModule(config.hidden_size, config.intermediate_size, lora_rank)
+            layer.self_attn.q_proj = LoRAModule(
+                config.head_dim * config.num_attention_heads,
+                config.hidden_size,
+                lora_rank,
+            )
+            layer.self_attn.k_proj = LoRAModule(
+                config.head_dim * config.num_key_value_heads,
+                config.hidden_size,
+                lora_rank,
+            )
+            layer.self_attn.v_proj = LoRAModule(
+                config.head_dim * config.num_key_value_heads,
+                config.hidden_size,
+                lora_rank,
+            )
+            layer.self_attn.o_proj = LoRAModule(
+                config.hidden_size,
+                config.head_dim * config.num_attention_heads,
+                lora_rank,
+            )
+            layer.mlp.gate_proj = LoRAModule(
+                config.intermediate_size, config.hidden_size, lora_rank
+            )
+            layer.mlp.up_proj = LoRAModule(
+                config.intermediate_size, config.hidden_size, lora_rank
+            )
+            layer.mlp.down_proj = LoRAModule(
+                config.hidden_size, config.intermediate_size, lora_rank
+            )
+
 
 # We also import (or define) the phoenix variant class.
 # Here we simply subclass LlamaForCausalLM so that we can give it a new architecture name.
@@ -79,7 +103,7 @@ class LlamaForCausalLMPhoenix(LlamaForCausalLM):
     ) -> None:
         super().__init__(config)
 
-        self.model.fc = nn.Linear(config.hidden_size*2, config.hidden_size, bias=True)
+        self.model.fc = nn.Linear(config.hidden_size * 2, config.hidden_size, bias=True)
 
 
 def extract_state_dicts(merged_dir):
@@ -87,7 +111,7 @@ def extract_state_dicts(merged_dir):
     Load all safetensors files in merged_dir and merge them into one state_dict.
     Then filter out the keys for the base model (prefixed with "model.model.")
     and for the phoenix part (prefixed with "phoenix_head.").
-    
+
     Returns:
        base_sd (dict): state dict for base model, with the prefix removed.
        phoenix_sd (dict): state dict for phoenix model (prefix removed).
@@ -110,23 +134,23 @@ def extract_state_dicts(merged_dir):
         # Our training script saved base model state dict keys with a prefix "model.model."
         # and the phoenix model keys with prefix "phoenix_head."
 
-
         # lora
         if key.startswith("model.base_model.model."):
-            new_key = key[len("model.base_model.model."):]
+            new_key = key[len("model.base_model.model.") :]
             if "lora_A" in new_key or "lora_B" in new_key:
                 # Remove ".default" from keys for LoRA modules (lora_A or lora_B)
                 import re
+
                 new_key = re.sub(r"(lora_[AB])\.default", r"\1", new_key)
             else:
-                new_key = key[len("model.base_model.model."):]
+                new_key = key[len("model.base_model.model.") :]
 
             base_sd[new_key] = value
             print(key, new_key)
 
         # nonlora
         elif key.startswith("model."):
-            new_key = key[len("model."):]
+            new_key = key[len("model.") :]
             base_sd[new_key] = value
             # print(key, new_key)
         elif key.startswith("phoenix_head.fc"):
@@ -136,16 +160,16 @@ def extract_state_dicts(merged_dir):
 
         elif key.startswith("phoenix_head.model."):
             # Remove prefix "phoenix_head.".
-            new_key = key[len("phoenix_head.model."):]
+            new_key = key[len("phoenix_head.model.") :]
             # print(key, new_key)
             phoenix_sd[new_key] = value
 
             # if key.startswith("phoenix_head.model.lm_head.weight"):
-                # print(value)
+            # print(value)
 
         elif key.startswith("phoenix_head."):
             # Remove prefix "phoenix_head.".
-            new_key = key[len("phoenix_head."):]
+            new_key = key[len("phoenix_head.") :]
             phoenix_sd[new_key] = value
             # print(key, new_key)
         else:
@@ -154,7 +178,15 @@ def extract_state_dicts(merged_dir):
     return base_sd, phoenix_sd
 
 
-def save_separated_models(model_name, merged_dir, base_model_dir, phoenix_model_dir, phoenix_num_layers, lora_rank=None, lora_alpha=None):
+def save_separated_models(
+    model_name,
+    merged_dir,
+    base_model_dir,
+    phoenix_model_dir,
+    phoenix_num_layers,
+    lora_rank=None,
+    lora_alpha=None,
+):
     """
     Loads the merged checkpoint from merged_dir, splits the state dict
     into base and phoenix portions, creates two separate HF models, and saves them.
@@ -164,14 +196,17 @@ def save_separated_models(model_name, merged_dir, base_model_dir, phoenix_model_
 
     # print(config)
 
-    dtype = config.torch_dtype if isinstance(config.torch_dtype, torch.dtype) else getattr(torch, config.torch_dtype)
+    dtype = (
+        config.torch_dtype
+        if isinstance(config.torch_dtype, torch.dtype)
+        else getattr(torch, config.torch_dtype)
+    )
 
-    
     # Extract our two state dicts.
     base_sd, phoenix_sd = extract_state_dicts(merged_dir)
 
     # print(phoenix_sd.keys())
-    
+
     # ----- Create and save the Base model -----
     print("Loading base model …")
     # Instantiate a standard llama model with the given config.
@@ -187,7 +222,6 @@ def save_separated_models(model_name, merged_dir, base_model_dir, phoenix_model_
         assert lora_alpha is not None, "lora_alpha must be provided for LoRA models"
         config.lora_alpha = lora_alpha
 
-
         base_model = LlamaForCausalLMLoRA(config, lora_rank).to(dtype)
 
     missing_keys, unexpected_keys = base_model.load_state_dict(base_sd, strict=False)
@@ -200,61 +234,87 @@ def save_separated_models(model_name, merged_dir, base_model_dir, phoenix_model_
     base_model.save_pretrained(base_model_dir)
 
     from transformers import AutoTokenizer
+
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.save_pretrained(base_model_dir)
 
     # ----- Create and save the Phoenix model -----
     print("Loading phoenix model …")
 
-
-
-
     # Change the architectures field to use our phoenix class.
     config._name_or_path = phoenix_model_dir
     config.architectures = ["LlamaForCausalLMPhoenix"]
     config.num_hidden_layers = phoenix_num_layers
     config.model_type = "llama"
-    
+
     # Instantiate the phoenix model.
     phoenix_model = LlamaForCausalLMPhoenix(config).to(dtype)
-    missing_keys, unexpected_keys = phoenix_model.load_state_dict(phoenix_sd, strict=False)
+    missing_keys, unexpected_keys = phoenix_model.load_state_dict(
+        phoenix_sd, strict=False
+    )
     if missing_keys:
         print("Phoenix model missing keys:", missing_keys)
     if unexpected_keys:
         print("Phoenix model unexpected keys:", unexpected_keys)
-    
-    
+
     print("Saving phoenix model to:", phoenix_model_dir)
     phoenix_model.save_pretrained(phoenix_model_dir)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Split merged phoenix-base HF model into separate models.")
-    parser.add_argument("--model_name", type=str, required=True,
-                        help=".")
-    parser.add_argument("--merged_model_dir", type=str, required=True,
-                        help="Directory containing the merged checkpoint (config.json and safetensors files).")
-    parser.add_argument("--base_model_dir", type=str, required=True,
-                        help="Output directory for the base Llama model.")
-    parser.add_argument("--phoenix_model_dir", type=str, required=True,
-                        help="Output directory for the phoenix model.")
+    parser = argparse.ArgumentParser(
+        description="Split merged phoenix-base HF model into separate models."
+    )
+    parser.add_argument("--model_name", type=str, required=True, help=".")
+    parser.add_argument(
+        "--merged_model_dir",
+        type=str,
+        required=True,
+        help="Directory containing the merged checkpoint (config.json and safetensors files).",
+    )
+    parser.add_argument(
+        "--base_model_dir",
+        type=str,
+        required=True,
+        help="Output directory for the base Llama model.",
+    )
+    parser.add_argument(
+        "--phoenix_model_dir",
+        type=str,
+        required=True,
+        help="Output directory for the phoenix model.",
+    )
 
-    parser.add_argument("--phoenix_num_layers", type=int, required=True,
-                        help="Number of layers in the phoenix model.")
+    parser.add_argument(
+        "--phoenix_num_layers",
+        type=int,
+        required=True,
+        help="Number of layers in the phoenix model.",
+    )
 
-    parser.add_argument("--lora_rank", type=int, default=None,
-                        help="The rank of the LoRA modules.")
+    parser.add_argument(
+        "--lora_rank", type=int, default=None, help="The rank of the LoRA modules."
+    )
 
-    parser.add_argument("--lora_alpha", type=float, default=None,
-                        help="The alpha of the LoRA modules.")
+    parser.add_argument(
+        "--lora_alpha", type=float, default=None, help="The alpha of the LoRA modules."
+    )
 
     args = parser.parse_args()
 
     # Create output directories if needed.
     os.makedirs(args.base_model_dir, exist_ok=True)
     os.makedirs(args.phoenix_model_dir, exist_ok=True)
-    
-    save_separated_models(args.model_name, args.merged_model_dir, args.base_model_dir, args.phoenix_model_dir, args.phoenix_num_layers, args.lora_rank, args.lora_alpha)
+
+    save_separated_models(
+        args.model_name,
+        args.merged_model_dir,
+        args.base_model_dir,
+        args.phoenix_model_dir,
+        args.phoenix_num_layers,
+        args.lora_rank,
+        args.lora_alpha,
+    )
     print("Separation complete.")
 
 

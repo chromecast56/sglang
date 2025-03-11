@@ -97,12 +97,14 @@ def set_torch_compile_config():
     import torch._inductor.config
 
     torch._inductor.config.coordinate_descent_tuning = True
+    # torch._inductor.config.coordinate_descent_tuning = False
     torch._inductor.config.triton.unique_kernel_names = True
     torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
 
     # NOTE: LoRA specific settings (default results in accuracy drop)
     # Maintain numerical precision
-    torch._inductor.config.emulate_precision_casts = True
+    # torch._inductor.config.emulate_precision_casts = True
+    torch._inductor.config.emulate_precision_casts = False
 
     # FIXME: tmp workaround
     torch._dynamo.config.accumulated_cache_size_limit = 1024
@@ -178,7 +180,10 @@ class CudaGraphRunner:
         self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(model_runner)
         self.capture_forward_mode = ForwardMode.DECODE
         self.num_tokens_per_bs = 1
-        if model_runner.spec_algorithm.is_eagle() or model_runner.spec_algorithm.is_phoenix():
+        if (
+            model_runner.spec_algorithm.is_eagle()
+            or model_runner.spec_algorithm.is_phoenix()
+        ):
             if self.model_runner.is_draft_worker:
                 raise RuntimeError("This should not happen")
             else:
@@ -221,7 +226,10 @@ class CudaGraphRunner:
             self.mrope_positions = torch.zeros((3, self.max_bs), dtype=torch.int64)
 
             # Speculative_inference
-            if model_runner.spec_algorithm.is_eagle() or model_runner.spec_algorithm.is_phoenix():
+            if (
+                model_runner.spec_algorithm.is_eagle()
+                or model_runner.spec_algorithm.is_phoenix()
+            ):
                 self.hidden_states = torch.zeros(
                     (self.max_num_token, self.model_runner.model_config.hidden_size),
                     dtype=self.model_runner.dtype,
@@ -472,11 +480,18 @@ class CudaGraphRunner:
 
     def get_spec_info(self, num_tokens: int):
         spec_info = None
-        if self.model_runner.spec_algorithm.is_eagle() or self.model_runner.spec_algorithm.is_phoenix():
+        if (
+            self.model_runner.spec_algorithm.is_eagle()
+            or self.model_runner.spec_algorithm.is_phoenix()
+        ):
             from sglang.srt.speculative.eagle_utils import EagleVerifyInput
             from sglang.srt.speculative.phoenix_utils import PhoenixVerifyInput
-            VerifyInput = EagleVerifyInput if self.model_runner.spec_algorithm.is_eagle() else PhoenixVerifyInput
-            
+
+            VerifyInput = (
+                EagleVerifyInput
+                if self.model_runner.spec_algorithm.is_eagle()
+                else PhoenixVerifyInput
+            )
 
             if self.model_runner.is_draft_worker:
                 raise RuntimeError("This should not happen.")
@@ -497,6 +512,5 @@ class CudaGraphRunner:
                     spec_steps=self.model_runner.server_args.speculative_num_steps,
                     capture_hidden_mode=CaptureHiddenMode.FULL,
                 )
-
 
         return spec_info
